@@ -48,7 +48,7 @@ class TestOfflineSTT(unittest.TestCase):
     def test_local_only_loading_and_existing_output_contract(self):
         result = self.engine().transcribe(str(self.audio))
         self.factory.assert_called_once_with(
-            str(self.model_dir.resolve()), device="cpu", compute_type="int8", local_files_only=True
+            str(self.model_dir.resolve()), device="cpu", compute_type="int8", local_files_only=True, cpu_threads=2
         )
         self.assertEqual(result["text"], "Сәлем. Обсудим задачу.")
         self.assertEqual(result["duration"], 3.14)

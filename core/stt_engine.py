@@ -18,7 +18,7 @@ class SpeechToTextEngine:
         "Русский язык, қазақ тілі, смешанная речь."
     )
 
-    def __init__(self, api_key: Optional[str] = None, *, model_dir: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, *, model_dir: Optional[str] = None, live=False):
         base_dir = (
             Path(sys.executable).resolve().parent
             if getattr(sys, "frozen", False)
@@ -30,6 +30,7 @@ class SpeechToTextEngine:
         self.compute_type = os.getenv("STT_COMPUTE_TYPE", "int8" if self.device == "cpu" else "default")
         self._model = None
         self._lock = threading.Lock()
+        self.live = live
 
     def set_api_key(self, api_key: str):
         """Compatibility hook; API keys never enable network processing."""
@@ -59,6 +60,7 @@ class SpeechToTextEngine:
             device=self.device,
             compute_type=self.compute_type,
             local_files_only=True,
+            cpu_threads=2,
         )
         if not model.model.is_multilingual:
             raise RuntimeError("Нужна многоязычная модель Whisper; модель .en не поддерживает русский и казахский.")
@@ -89,7 +91,7 @@ class SpeechToTextEngine:
                 task="transcribe",
                 multilingual=selected_language is None,
                 initial_prompt=self.DEFAULT_PROMPT if custom_prompt is None else custom_prompt,
-                beam_size=5,
+                beam_size=1 if self.live else 5,
                 vad_filter=True,
                 word_timestamps=True,
             )

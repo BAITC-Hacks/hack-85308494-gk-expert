@@ -6,6 +6,7 @@ import wave
 import threading
 import uuid
 from functools import wraps
+from bisect import bisect_right
 from typing import List, Dict, Optional
 
 try:
@@ -72,6 +73,46 @@ class AudioRecorder:
         self._paused_total = 0.0
         self._pause_started = None
         self._level_updated = {"mic_level": 0.0, "system_level": 0.0}
+        self._frames_lock = threading.Lock()
+        self._live_tracks = []
+        self._muted = {"mic": False, "sys": False}
+
+    def set_muted(self, source, muted):
+        if source not in self._muted:
+            raise ValueError("Неизвестный источник звука")
+        self._muted[source] = bool(muted)
+        if muted:
+            setattr(self, "mic_level" if source == "mic" else "system_level", 0.0)
+        return dict(self._muted)
+
+    def available_seconds(self):
+        with self._frames_lock:
+            return max((t["frame_count"] / t["rate"] for t in self._live_tracks), default=0.0)
+
+    def read_live_window(self, start, end, sample_rate=16000):
+        """Copy only the requested interval; no inference or resampling in callbacks."""
+        import numpy as np
+        from scipy.signal import resample_poly
+        length = max(0, round((end - start) * sample_rate))
+        mixed = np.zeros(length, dtype=np.float32)
+        snapshots = []
+        with self._frames_lock:
+            for track in self._live_tracks:
+                first, last = int(start * track["rate"]), int(end * track["rate"])
+                index = max(0, bisect_right(track["offsets"], first) - 1)
+                stop = bisect_right(track["offsets"], last)
+                if index < len(track["frames"]):
+                    snapshots.append((track["rate"], track["channels"], first - track["offsets"][index],
+                                      last - first, tuple(track["frames"][index:stop])))
+        for rate, channels, offset, count, frames in snapshots:
+            samples = np.frombuffer(b"".join(frames), dtype='<i2').reshape(-1, channels)
+            samples = samples[offset:offset + count].astype(np.float32).mean(axis=1) / 32768.0
+            if len(samples) and rate != sample_rate:
+                divisor = math.gcd(rate, sample_rate)
+                samples = resample_poly(samples, sample_rate // divisor, rate // divisor)
+            used = min(len(samples), length)
+            mixed[:used] += samples[:used]
+        return np.clip(mixed, -1.0, 1.0)
 
     @_serialized_audio_call
     def get_audio_devices(self) -> Dict[str, List[Dict]]:
@@ -154,6 +195,8 @@ class AudioRecorder:
             self.is_paused = False
             self.start_time = time.monotonic()
             self.elapsed_time = 0.0
+            with self._frames_lock:
+                self._live_tracks = []
             self.record_thread = threading.Thread(
                 target=self._unified_record_worker,
                 args=(mode, mic_index, loopback_index),
@@ -283,7 +326,12 @@ class AudioRecorder:
                     if self._stop_event.is_set():
                         return (None, pyaudio.paComplete)
                     if not self.is_paused and data:
-                        track["frames"].append(data)
+                        if self._muted[track["kind"]]:
+                            data = bytes(len(data))
+                        with self._frames_lock:
+                            track["offsets"].append(track["frame_count"])
+                            track["frames"].append(data)
+                            track["frame_count"] += len(data) // (2 * track["channels"])
                         setattr(self, track["level"], self._calc_rms(data))
                         self._level_updated[track["level"]] = time.monotonic()
                     else:
@@ -314,10 +362,15 @@ class AudioRecorder:
                     "rate": int(device["defaultSampleRate"]),
                     "channels": min(2, int(device["maxInputChannels"])),
                     "frames": [],
+                    "offsets": [],
+                    "frame_count": 0,
+                    "kind": kind,
                     "level": level,
                     "stream": None,
                 }
                 tracks.append(track)
+                with self._frames_lock:
+                    self._live_tracks.append(track)
                 try:
                     with _PORTAUDIO_LOCK:
                         track["stream"] = audio.open(

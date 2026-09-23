@@ -66,6 +66,8 @@ from core.export_service import ExportService
 from core.sed_integrator import SEDIntegrator
 from core.meeting_manager import MeetingManager
 from core.company_group_manager import CompanyGroupManager
+from core.audio_pipeline import MediaStore, WindowTranscriber, ProcessingJobs, LiveTranscriber, now_iso
+from core.save_dialog import ExportSaver
 
 try:
     import webview
@@ -91,11 +93,20 @@ class ProtocolApiBridge:
 
         self.recorder = AudioRecorder(output_dir=os.path.join(DATA_DIR, "storage", "recordings"))
         self.stt = SpeechToTextEngine()
+        self.live_stt = SpeechToTextEngine(live=True)
+        self.media = MediaStore(os.path.join(DATA_DIR, "storage", "playback"))
+        self.windows = WindowTranscriber(self.stt, self.media)
+        self.live = None
         self.nlp = NLPExtractor()
         self.exporter = ExportService(output_dir=os.path.join(DATA_DIR, "storage", "protocols"))
         self.sed = SEDIntegrator(export_dir=os.path.join(DATA_DIR, "storage", "sed_exports"))
         self.manager = MeetingManager(data_dir=os.path.join(DATA_DIR, "storage", "meetings"))
         self.comp_mgr = CompanyGroupManager(data_dir=os.path.join(DATA_DIR, "storage"))
+        self.jobs = ProcessingJobs(self._process_audio)
+        self._record_control = threading.Lock()
+        self._window = None
+        self._export_saver = ExportSaver()
+        self._downloads = {}
 
     def get_audio_devices(self, params=None):
         return self.recorder.get_audio_devices()
@@ -105,7 +116,46 @@ class ProtocolApiBridge:
         mode = params.get("mode", "mix")
         mic_idx = params.get("mic_index")
         loop_idx = params.get("loopback_index")
-        return self.recorder.start_recording(mode=mode, mic_index=mic_idx, loopback_index=loop_idx)
+        with self._record_control:
+            if self.recorder.is_recording:
+                raise RuntimeError("Запись уже идёт")
+            result = self.recorder.start_recording(mode=mode, mic_index=mic_idx, loopback_index=loop_idx)
+            self.recorder.set_muted('mic', params.get('mic_muted', False))
+            self.recorder.set_muted('sys', params.get('sys_muted', False))
+            self.live = LiveTranscriber(self.recorder, self.live_stt, self.media, self.settings)
+            self.live.start()
+            return result
+
+    def set_source_muted(self, params):
+        if self.recorder.is_recording and not params.get('muted'):
+            with self.recorder._frames_lock:
+                active = [track['kind'] for track in self.recorder._live_tracks]
+            if params.get('source') not in active:
+                raise ValueError('Этот источник не был включён при старте. Остановите запись и включите его перед новой записью.')
+        return self.recorder.set_muted(params.get('source'), params.get('muted'))
+
+    def get_live_status(self, params=None):
+        return self.live.status() if self.live else {'state': 'idle', 'segments': [], 'current_chunk': None}
+
+    def stop_recording_job(self, params=None):
+        with self._record_control:
+            if self.live:
+                self.live.stop()
+            tracks = self.recorder.stop_recording()
+            settings = dict(self.settings, recording_saved_at=now_iso())
+            job = self.jobs.submit(tracks['master'], settings, tracks,
+                                   'Запись ' + time.strftime('%d.%m.%Y %H:%M:%S'))
+            return {'job': job}
+
+    def submit_existing_audio(self, filepath, title=None):
+        settings = dict(self.settings, recording_saved_at=now_iso())
+        return {'job': self.jobs.submit(filepath, settings, title=title)}
+
+    def get_jobs(self, params=None):
+        return self.jobs.list()
+
+    def get_job(self, params):
+        return self.jobs.get(params.get('id'))
 
     def pause_recording(self, params=None):
         self.recorder.pause_recording()
@@ -129,7 +179,9 @@ class ProtocolApiBridge:
         if not master_file or not os.path.exists(master_file):
             raise FileNotFoundError("Аудиофайл записи не найден")
 
-        return self._process_audio(master_file, rec_files)
+        if self.live:
+            self.live.stop()
+        return self._process_audio(master_file, tracks=rec_files)
 
     def process_existing_audio(self, filepath: str, model: str = "offline"):
         if isinstance(filepath, dict):
@@ -137,29 +189,35 @@ class ProtocolApiBridge:
             filepath = filepath.get("filepath", "")
         return self._process_audio(filepath)
 
-    def _process_audio(self, filepath, tracks=None):
+    def _process_audio(self, filepath, settings=None, tracks=None, progress=None):
+        settings = dict(settings or self.settings)
+        progress = progress or (lambda **fields: None)
         if not os.path.isfile(filepath):
             raise FileNotFoundError("Аудиофайл не найден. Запишите звук или загрузите файл.")
         if not self._processing_lock.acquire(blocking=False):
             raise RuntimeError("Уже обрабатывается другое совещание. Дождитесь завершения.")
         self._processing = {"busy": True, "stage": "Распознавание речи на этом компьютере", "started_at": time.time()}
         try:
-            transcript = self.stt.transcribe(filepath, custom_prompt=self.settings.get("prompt") or None,
-                                             language=self.settings.get("language", "auto"))
+            transcript = self.windows.process(filepath, settings, progress)
             self._processing["stage"] = "Выделение поручений и подготовка протокола"
+            progress(stage=self._processing["stage"])
             meeting = self.nlp.process_transcript(transcript)
             meeting["id"] = "meeting_" + uuid.uuid4().hex[:16]
             meeting["date"] = time.strftime("%d.%m.%Y")
             meeting["audio_filename"] = os.path.basename(filepath)
+            meeting["playback_file"] = transcript['playback_file']
+            meeting["recording_saved_at"] = settings.get('recording_saved_at', now_iso())
+            meeting["company"] = settings.get('company', 'Организация')
             if tracks:
                 meeting["audio_mic_track"] = tracks.get("mic", "")
                 meeting["audio_sys_track"] = tracks.get("sys", "")
-            self.manager.save_meeting(meeting)
             self._processing["stage"] = "Сохранение Word и PDF"
+            progress(stage=self._processing['stage'])
             self.exporter.export_to_docx(meeting, f"Протокол_{meeting['id']}.docx")
             self.exporter.export_to_pdf(meeting, f"Протокол_{meeting['id']}.pdf")
             self.exporter.export_to_txt(meeting, f"Стенограмма_{meeting['id']}.txt")
             self.sed.export_to_sed_json(meeting, f"СЭД_{meeting['id']}.json")
+            self.manager.save_meeting(meeting)
             return {"meeting": meeting}
         finally:
             self._processing = {"busy": False, "stage": "Готов", "started_at": 0}
@@ -174,7 +232,18 @@ class ProtocolApiBridge:
 
     def get_meeting(self, params):
         meeting_id = params.get("id")
-        return self.manager.get_meeting(meeting_id)
+        meeting = self.manager.get_meeting(meeting_id)
+        if meeting and meeting.get('playback_file'):
+            try:
+                meeting['audio_url'] = self.media.register(self.media.root / meeting['playback_file'])
+            except ValueError:
+                meeting['audio_url'] = None
+        elif meeting and meeting.get('audio_filename'):
+            from pathlib import Path
+            previous_audio = Path(DATA_DIR) / 'storage' / 'recordings' / Path(meeting['audio_filename']).name
+            if previous_audio.is_file():
+                meeting['audio_url'] = self.media.register(previous_audio)
+        return meeting
 
     def list_meetings(self, params=None):
         return self.manager.list_meetings()
@@ -249,6 +318,22 @@ class ProtocolApiBridge:
         path = self.exporter.export_to_txt(meeting, f"Стенограмма_{meeting['id']}.txt")
         return {"filepath": os.path.abspath(path)}
 
+    def save_export(self, params):
+        methods = {'docx': self.export_docx, 'pdf': self.export_pdf,
+                   'txt': self.export_transcript, 'json': self.export_sed}
+        method = methods.get(params.get('format'))
+        if method is None:
+            raise ValueError('Неизвестный формат документа')
+        exported = method(params)
+        if exported.get('error'):
+            raise ValueError(exported['error'])
+        path = exported['filepath']
+        if self._window is not None:
+            return self._export_saver.save(self._window, path)
+        token = uuid.uuid4().hex
+        self._downloads[token] = path
+        return {'download_url': '/download/' + token, 'filename': os.path.basename(path)}
+
     def save_settings(self, params):
         company = str(params.get("company", self.settings["company"])).strip()[:200] or "Организация"
         prompt = str(params.get("prompt", self.settings.get("prompt", ""))).strip()[:4000]
@@ -271,6 +356,80 @@ class AppHttpServer(SimpleHTTPRequestHandler):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=os.path.join(RESOURCE_DIR, "ui"), **kwargs)
+
+    def do_GET(self):
+        if self.path.startswith('/media/'):
+            self._serve_media()
+        elif self.path.startswith('/download/'):
+            token = urllib.parse.urlsplit(self.path).path.removeprefix('/download/')
+            path = self.bridge._downloads.get(token)
+            if not path or not os.path.isfile(path):
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.send_header('Content-Type', self.guess_type(path))
+            self.send_header('Content-Disposition', "attachment; filename*=UTF-8''" + urllib.parse.quote(os.path.basename(path)))
+            self.send_header('Content-Length', str(os.path.getsize(path)))
+            self.end_headers()
+            with open(path, 'rb') as stream:
+                self.copyfile(stream, self.wfile)
+        else:
+            super().do_GET()
+
+    def do_HEAD(self):
+        if self.path.startswith('/media/'):
+            self._serve_media(head=True)
+        else:
+            super().do_HEAD()
+
+    def _serve_media(self, head=False):
+        token = urllib.parse.urlsplit(self.path).path.removeprefix('/media/')
+        path = self.bridge.media.resolve(token)
+        if not path or not path.is_file():
+            self.send_error(404, 'Audio not found')
+            return
+        size = path.stat().st_size
+        start, end, status = 0, size - 1, 200
+        requested = self.headers.get('Range')
+        if requested:
+            match = re.fullmatch(r'bytes=(\d*)-(\d*)', requested.strip())
+            if not match or not any(match.groups()):
+                self.send_error(416)
+                return
+            left, right = match.groups()
+            if left:
+                start = int(left)
+                end = min(size - 1, int(right)) if right else size - 1
+            else:
+                start = max(0, size - int(right))
+            if start >= size or end < start:
+                self.send_response(416)
+                self.send_header('Content-Range', f'bytes */{size}')
+                self.end_headers()
+                return
+            status = 206
+        self.send_response(status)
+        self.send_header('Content-Type', self.guess_type(str(path)))
+        self.send_header('Accept-Ranges', 'bytes')
+        self.send_header('Cache-Control', 'private, no-store')
+        self.send_header('Content-Length', str(end - start + 1))
+        if status == 206:
+            self.send_header('Content-Range', f'bytes {start}-{end}/{size}')
+        self.end_headers()
+        if head:
+            return
+        try:
+            with path.open('rb') as stream:
+                stream.seek(start)
+                remaining = end - start + 1
+                while remaining > 0:
+                    block = stream.read(min(65536, remaining))
+                    if not block:
+                        break
+                    self.wfile.write(block)
+                    remaining -= len(block)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
 
     def do_POST(self):
         if not self.path.startswith("/api/"):
@@ -328,7 +487,10 @@ class AppHttpServer(SimpleHTTPRequestHandler):
                 with open(save_path, "wb") as f:
                     f.write(file_content)
 
-                res = self.bridge.process_existing_audio(save_path, model=model)
+                if hasattr(self.bridge, 'submit_existing_audio'):
+                    res = self.bridge.submit_existing_audio(save_path, title=filename)
+                else:
+                    res = self.bridge.process_existing_audio(save_path, model=model)
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
                 self.end_headers()
@@ -422,6 +584,15 @@ def main():
                 min_size=(1024, 700),
                 text_select=True
             )
+            bridge._window = window
+
+            def can_close():
+                if bridge.recorder.is_recording or any(job['state'] in ('queued', 'running') for job in bridge.jobs.list()):
+                    window.evaluate_js("updateAiThought('Сначала остановите запись и дождитесь завершения обработки. Затем закройте приложение.')")
+                    return False
+                return True
+
+            window.events.closing += can_close
             if "--ui-self-test" in sys.argv:
                 from core.ui_self_test import run_gui_check
                 webview.start(run_gui_check, (window, bridge), gui="edgechromium", debug=False)
@@ -429,10 +600,13 @@ def main():
                 webview.start(gui="edgechromium", debug=False)
             if bridge.recorder.is_recording:
                 bridge.recorder.stop_recording()
+            if bridge.live:
+                bridge.live.stop()
             server.shutdown()
             server.server_close()
             return
         except Exception as e:
+            bridge._window = None
             print(f"[Desktop] Окно WebView не удалось открыть ({e}). Открываем браузер: http://127.0.0.1:{actual_port}")
             try:
                 import webbrowser

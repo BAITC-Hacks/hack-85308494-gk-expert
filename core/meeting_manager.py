@@ -1,6 +1,7 @@
 import os
 import json
 import time
+from datetime import datetime
 from typing import Dict, List, Optional
 
 
@@ -20,6 +21,7 @@ class MeetingManager:
         meeting_data["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
         if "created_at" not in meeting_data:
             meeting_data["created_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        meeting_data.setdefault("saved_at", datetime.now().astimezone().isoformat(timespec='seconds'))
 
         file_path = os.path.join(self.data_dir, f"{meeting_id}.json")
         with open(file_path, "w", encoding="utf-8") as f:
@@ -49,6 +51,9 @@ class MeetingManager:
                             "title": data.get("title", "Без названия"),
                             "date": data.get("date", ""),
                             "created_at": data.get("created_at", ""),
+                            "saved_at": data.get("recording_saved_at") or data.get("saved_at") or data.get("created_at", ""),
+                            "protocol_saved_at": data.get("saved_at", data.get("created_at", "")),
+                            "company_id": data.get("company_id", "main_org"),
                             "leader": data.get("leader", ""),
                             "tasks_count": len(data.get("tasks", [])),
                             "participants_count": len(data.get("participants", [])),
@@ -59,7 +64,7 @@ class MeetingManager:
                     print(f"[MeetingManager] Error reading {fname}: {e}")
 
         # Sort newest first
-        meetings.sort(key=lambda m: m.get("created_at", ""), reverse=True)
+        meetings.sort(key=lambda m: m.get("saved_at", ""), reverse=True)
         return meetings
 
     def update_task_status(self, meeting_id: str, task_id: int, new_status: str) -> bool:

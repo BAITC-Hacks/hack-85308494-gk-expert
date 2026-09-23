@@ -1,0 +1,199 @@
+"""Independent live and file workers with explicit, playable audio windows."""
+from copy import deepcopy
+from datetime import datetime
+from pathlib import Path
+import queue
+import threading
+import time
+import uuid
+import wave
+
+RATE = 16000
+
+
+def now_iso():
+    return datetime.now().astimezone().isoformat(timespec='seconds')
+
+
+def write_wav(path, samples):
+    import numpy as np
+    with wave.open(str(path), 'wb') as stream:
+        stream.setparams((1, 2, RATE, 0, 'NONE', 'not compressed'))
+        stream.writeframes(np.clip(samples * 32767, -32768, 32767).astype('<i2').tobytes())
+
+
+class MediaStore:
+    def __init__(self, root):
+        self.root = Path(root).resolve()
+        self.root.mkdir(parents=True, exist_ok=True)
+        self._paths = {}
+        self._lock = threading.Lock()
+
+    def register(self, path):
+        path = Path(path).resolve()
+        if not any(path.is_relative_to(folder) for folder in (self.root, self.root.parent / 'recordings')) or not path.is_file():
+            raise ValueError('Аудиофайл недоступен')
+        with self._lock:
+            token = uuid.uuid4().hex
+            self._paths[token] = path
+        return '/media/' + token
+
+    def resolve(self, token):
+        with self._lock:
+            return self._paths.get(token)
+
+    def save(self, samples, prefix='chunk'):
+        path = self.root / (prefix + '_' + uuid.uuid4().hex + '.wav')
+        write_wav(path, samples)
+        return path, self.register(path)
+
+
+def shifted_segments(result, offset, existing):
+    segments = []
+    for original in result.get('segments', []):
+        segment = deepcopy(original)
+        segment['id'] = existing + len(segments)
+        for field in ('start', 'end'):
+            segment[field] = round(float(segment.get(field, 0)) + offset, 2)
+        for word in segment.get('words', []):
+            for field in ('start', 'end'):
+                word[field] = round(float(word.get(field, 0)) + offset, 2)
+        segments.append(segment)
+    return segments
+
+
+class WindowTranscriber:
+    """Process each advertised interval exactly once, including the short tail."""
+    def __init__(self, engine, media, seconds=20):
+        self.engine, self.media, self.seconds = engine, media, seconds
+
+    def process(self, filepath, settings, progress):
+        from faster_whisper.audio import decode_audio
+        progress(stage='Подготовка аудио', state='running')
+        samples = decode_audio(str(filepath), sampling_rate=RATE)
+        if not len(samples):
+            raise ValueError('Аудиофайл не содержит звука')
+        full_path, full_url = self.media.save(samples, 'recording')
+        duration = len(samples) / RATE
+        progress(total_seconds=duration, audio_url=full_url)
+        segments = []
+        detected_language = 'auto'
+        size = int(self.seconds * RATE)
+        for index in range(0, len(samples), size):
+            end = min(index + size, len(samples))
+            path, url = self.media.save(samples[index:end])
+            current = {'start': round(index / RATE, 2), 'end': round(end / RATE, 2), 'audio_url': url}
+            progress(stage='Распознавание фрагмента', current_chunk=current)
+            context = settings.get('prompt') or self.engine.DEFAULT_PROMPT
+            if segments:
+                context += ' ' + ' '.join(s['text'] for s in segments)[-250:]
+            result = self.engine.transcribe(str(path), custom_prompt=context, language=settings.get('language', 'auto'))
+            segments.extend(shifted_segments(result, index / RATE, len(segments)))
+            detected_language = result.get('language', detected_language)
+            progress(completed_seconds=end / RATE, segments=segments, stage='Фрагмент распознан')
+        return {'text': ' '.join(s['text'] for s in segments), 'segments': segments,
+                'duration': duration, 'language': detected_language, 'filename': Path(filepath).name,
+                'processing_location': 'local', 'engine': 'faster-whisper-local', 'diarization': 'not_performed',
+                'playback_file': full_path.name, 'audio_url': full_url}
+
+
+class ProcessingJobs:
+    """One ordered file worker, independent from recording and live recognition."""
+    def __init__(self, processor):
+        self.processor = processor
+        self._lock = threading.RLock()
+        self._jobs = {}
+        self._queue = queue.Queue()
+        self._worker = threading.Thread(target=self._run, name='file-transcription', daemon=True)
+        self._worker.start()
+
+    def submit(self, filepath, settings, tracks=None, title=None):
+        identifier = uuid.uuid4().hex
+        job = {'id': identifier, 'name': title or Path(filepath).name, 'state': 'queued', 'stage': 'В очереди',
+               'created_at': now_iso(), 'completed_seconds': 0, 'total_seconds': 0, 'segments': [], 'current_chunk': None}
+        with self._lock:
+            self._jobs[identifier] = job
+        self._queue.put((identifier, filepath, deepcopy(settings), tracks))
+        return self.get(identifier)
+
+    def get(self, identifier):
+        with self._lock:
+            if identifier not in self._jobs:
+                raise ValueError('Задача обработки не найдена')
+            return deepcopy(self._jobs[identifier])
+
+    def list(self):
+        with self._lock:
+            return [{key: deepcopy(value) for key, value in job.items() if key not in ('segments', 'meeting')}
+                    for job in self._jobs.values()]
+
+    def _run(self):
+        while True:
+            item = self._queue.get()
+            if item is None:
+                self._queue.task_done()
+                return
+            identifier, filepath, settings, tracks = item
+            def progress(**fields):
+                with self._lock:
+                    self._jobs[identifier].update(deepcopy(fields))
+            try:
+                progress(state='running', stage='Подготовка', started_at=now_iso())
+                result = self.processor(filepath, settings, tracks, progress)
+                progress(state='done', stage='Сохранено', meeting_id=result['meeting']['id'], saved_at=now_iso())
+            except Exception as exc:
+                progress(state='error', stage='Ошибка', error=str(exc))
+            finally:
+                self._queue.task_done()
+
+
+class LiveTranscriber:
+    def __init__(self, recorder, engine, media, settings, seconds=8):
+        self.recorder, self.engine, self.media = recorder, engine, media
+        self.settings, self.seconds = deepcopy(settings), seconds
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._state = {'state': 'listening', 'segments': [], 'completed_seconds': 0, 'current_chunk': None,
+                       'stage': 'Ожидание первого фрагмента', 'session_id': uuid.uuid4().hex}
+        self._thread = threading.Thread(target=self._run, name='live-transcription', daemon=True)
+
+    def start(self):
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+
+    def status(self):
+        with self._lock:
+            state = deepcopy(self._state)
+        state['available_seconds'] = self.recorder.available_seconds()
+        state['lag_seconds'] = max(0, round(state['available_seconds'] - state['completed_seconds'], 1))
+        return state
+
+    def _update(self, **fields):
+        with self._lock:
+            self._state.update(fields)
+
+    def _run(self):
+        cursor, segments = 0.0, []
+        try:
+            while not self._stop.wait(0.15):
+                available = self.recorder.available_seconds()
+                if available - cursor < self.seconds:
+                    continue
+                end = cursor + self.seconds
+                samples = self.recorder.read_live_window(cursor, end)
+                path, url = self.media.save(samples, 'live')
+                self._update(state='transcribing', stage='Распознавание live-фрагмента',
+                             current_chunk={'start': cursor, 'end': end, 'audio_url': url})
+                result = self.engine.transcribe(str(path), custom_prompt=self.settings.get('prompt') or None,
+                                                language=self.settings.get('language', 'auto'))
+                segments.extend(shifted_segments(result, cursor, len(segments)))
+                cursor = end
+                self._update(state='listening', segments=deepcopy(segments), completed_seconds=cursor,
+                             stage='Live-текст обновлён')
+        except Exception as exc:
+            self._update(state='error', error=str(exc), stage='Live недоступен; исходная запись продолжается')
+        finally:
+            if self._state['state'] != 'error':
+                self._update(state='stopped', stage='Запись сохранена; итоговый протокол обрабатывается отдельно')

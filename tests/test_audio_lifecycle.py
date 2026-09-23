@@ -161,6 +161,21 @@ class TestAudioLifecycle(unittest.TestCase):
         self.assertEqual(self.recorder.get_status()['mic_level'], 0)
         self.recorder.stop_recording()
 
+    def test_source_mute_preserves_timing_but_records_silence(self):
+        self.recorder.start_recording('mic')
+        self.recorder.set_muted('mic', True)
+        self.audio.streams[0].emit(25000)
+        self.assertEqual(self.recorder.get_status()['mic_level'], 0)
+        self.recorder.set_muted('mic', False)
+        self.audio.streams[0].emit(5000)
+        saved = self.recorder.stop_recording()
+        with wave.open(saved['mic'], 'rb') as audio:
+            channels = audio.getnchannels()
+            self.assertEqual(audio.getnframes(), 192)
+            audio.setpos(64)
+            self.assertEqual(audio.readframes(64), bytes(64 * channels * 2))
+            self.assertEqual(audio.readframes(64), struct.pack('<h', 5000) * 64 * channels)
+
     def test_start_timeout_cannot_overwrite_an_active_worker(self):
         self.recorder.START_TIMEOUT = 0.01
         self.audio.open_delay = 0.15

@@ -15,9 +15,11 @@ def run(bridge, start_server):
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audio", required=True)
     parser.add_argument("--report", required=True)
+    parser.add_argument("--live-parallel", action="store_true")
     options = parser.parse_args()
     report = {"ok": False, "external_connection_attempts": 0}
     server = None
+    live = None
     original_connect = socket.socket.connect
 
     def local_only(connection, address):
@@ -42,12 +44,48 @@ def run(bridge, start_server):
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
             with opener.open(request, timeout=600) as response:
                 result = json.load(response)
+            if options.live_parallel:
+                from faster_whisper.audio import decode_audio
+                from types import SimpleNamespace
+                from core.audio_pipeline import LiveTranscriber, RATE
+                samples = decode_audio(str(audio), sampling_rate=RATE)[:RATE * 8]
+                recorder = SimpleNamespace(available_seconds=lambda: len(samples) / RATE,
+                    read_live_window=lambda *_: samples)
+                live = LiveTranscriber(recorder, bridge.live_stt, bridge.media, bridge.settings)
+                live.start()
             if "error" in result:
                 raise RuntimeError(result["error"])
+            if 'job' in result:
+                identifier = result['job']['id']
+                deadline = time.monotonic() + 900
+                while time.monotonic() < deadline:
+                    job = bridge.get_job({'id': identifier})
+                    if live and live.status()['segments'] and job['state'] == 'running':
+                        report['live_text_during_file_processing'] = True
+                    if job['state'] == 'error':
+                        raise RuntimeError(job['error'])
+                    if job['state'] == 'done':
+                        result = {'meeting': bridge.get_meeting({'id': job['meeting_id']})}
+                        report['chunked_job'] = True
+                        break
+                    time.sleep(0.2)
+                else:
+                    raise TimeoutError('File transcription job did not finish')
             meeting = result["meeting"]
             assert meeting["transcript"].strip(), "No speech detected in the test recording"
             assert meeting["processing_location"] == "local"
             assert bridge.manager.get_meeting(meeting["id"])["transcript"] == meeting["transcript"]
+            if live:
+                assert report.get('live_text_during_file_processing'), 'No live result while file worker was active'
+                report['live_characters'] = sum(len(s['text']) for s in live.status()['segments'])
+            if meeting.get('audio_url'):
+                request = urllib.request.Request(f"http://127.0.0.1:{port}" + meeting['audio_url'], headers={'Range': 'bytes=0-43'})
+                with opener.open(request) as response:
+                    assert response.status == 206 and response.read().startswith(b'RIFF')
+                report['playable_audio_range'] = True
+            exported = bridge.export_transcript({'meeting_id': meeting['id']})
+            assert meeting['transcript'][:40] in Path(exported['filepath']).read_text(encoding='utf-8-sig')
+            report['txt_utf8'] = True
             for format_name in ("docx", "pdf"):
                 exported = getattr(bridge, "export_" + format_name)({"meeting_id": meeting["id"]})
                 path = Path(exported["filepath"])
@@ -66,6 +104,9 @@ def run(bridge, start_server):
     except Exception:
         report["error"] = traceback.format_exc()
     finally:
+        if live:
+            live.stop()
+            live._thread.join(20)
         if server:
             server.shutdown()
             server.server_close()

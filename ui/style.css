@@ -522,3 +522,57 @@ th {
 @keyframes processingPulse { 50% { opacity: .45; } }
 button:disabled { opacity: .45; cursor: default; }
 @media (prefers-reduced-motion: reduce) { .processing #liveStatusPill { animation: none; } }
+
+/* Live workspace: transcript receives the space, meters stay compact. */
+[hidden] { display: none !important; }
+button { font: inherit; color: var(--obs-text); background: var(--obs-btn-bg); border: 1px solid var(--obs-border); border-radius: 3px; padding: 6px 9px; cursor: pointer; }
+button:hover:not(:disabled) { background: var(--obs-btn-hover); }
+button:focus-visible, select:focus-visible { outline: 2px solid #32b3ef; outline-offset: -2px; }
+.obs-menu-bar button { background: transparent; border: 0; padding: 4px 12px; }
+.obs-col-left { width: 280px; }
+.obs-col-left .session-panel { min-height: 150px; flex: 1; }
+.obs-col-left .sources-panel { flex: 0 0 auto; }
+.workspace-tabs { display: flex; border-bottom: 1px solid var(--obs-border); flex-shrink: 0; }
+.workspace-tabs button { flex: 1; border: 0; border-radius: 0; background: transparent; padding: 9px; }
+.workspace-tabs button.active { background: #24374e; box-shadow: inset 0 -2px #32b3ef; color: #fff; }
+.empty-state { color: var(--obs-text-dim); padding: 18px 10px; line-height: 1.7; }
+.history-item { display: flex; flex-direction: column; gap: 6px; width: 100%; text-align: left; margin-bottom: 5px; padding: 10px; background: #262c32; word-break: break-word; }
+.history-item.active { border-color: #32b3ef; background: #24374e; }
+.history-item span, .history-item small { font-size: 11px; color: #aebbc6; }
+.live-job { color: #fb8181; }
+.sources-panel .obs-panel-header { flex-direction: column; align-items: flex-start; gap: 5px; }
+#sourceStateLabel { color: var(--obs-text-dim); font-size: 10px; font-weight: normal; }
+.source-item { display: flex; gap: 3px; align-items: center; padding: 5px 2px; border-left: 2px solid transparent; }
+.source-item.selected { background: #252d34; border-left-color: #32b3ef; }
+.source-item button { background: transparent; border: 0; padding: 5px; flex-shrink: 0; }
+.source-item select { width: 100%; min-width: 0; }
+.source-muted .source-toggle { color: #ef7979; }
+.import-source { width: 100%; margin-top: 6px; text-align: left; }
+.source-picker { display: flex; flex-wrap: wrap; gap: 5px; padding: 8px; }
+.obs-preview-monitor { flex: 0 0 145px; }
+#waveformCanvas { width: 100%; height: 100%; }
+.live-panel { flex: 1; min-height: 230px; }
+.stream-view { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+.stream-heading { display: flex; justify-content: space-between; gap: 10px; padding: 8px 12px; font-size: 11px; color: #9db6ca; }
+.stream-heading span:last-child { white-space: nowrap; }
+.stream-text { flex: 1; overflow-y: auto; background: #1c2228; padding: 5px 12px; min-height: 45px; }
+.live-line { display: grid; grid-template-columns: 48px 1fr; gap: 8px; padding: 7px 0; line-height: 1.5; }
+.live-line time { font-size: 11px; color: #32b3ef; font-variant-numeric: tabular-nums; }
+.chunk-controls { display: flex; align-items: center; gap: 9px; padding: 7px 10px; flex-wrap: wrap; }
+.chunk-controls span { font-size: 11px; color: #9db6ca; }
+.playback-strip { padding: 5px 10px 7px; border-top: 1px solid var(--obs-border); }
+#playbackLabel { font-size: 11px; margin-bottom: 4px; }
+audio { width: 100%; height: 30px; color-scheme: dark; }
+.muted-caption { color: #e4c77d; font-size: 11px; line-height: 1.5; }
+.obs-panels-bottom-row { height: 225px; }
+.mixer-strips { padding: 5px; }
+.mixer-meter-container { height: 70px; min-height: 30px; }
+.mixer-label { font-size: 10px; }
+.mixer-db, .mixer-mute { margin-top: 3px; }
+.obs-transitions { min-width: 225px; }
+.protocol-overlay { width: min(100%, 1060px); }
+.protocol-tabs { flex-wrap: wrap; }
+.protocol-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+#playbackCanvas { width: 100%; height: 52px; margin-bottom: 8px; }
+.obs-status-bar > div:first-child { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+@media (max-width: 1150px) { .obs-col-left { width: 235px; } .obs-col-right { width: 180px; } .obs-preview-monitor { flex-basis: 100px; } .obs-transitions { min-width: 210px; } .chunk-controls { gap: 5px; padding: 4px; } }

@@ -57,6 +57,25 @@ class TestUploadHandler(unittest.TestCase):
         self.server.server_close()
         self.worker.join(timeout=2)
 
+    def test_audio_range_seek_and_unknown_token(self):
+        from core.audio_pipeline import MediaStore
+        media = MediaStore(Path(self.server.RequestHandlerClass.__init__.__globals__['DATA_DIR']) / 'playback')
+        path = media.root / 'sample.wav'
+        path.write_bytes(bytes(range(100)))
+        url = media.register(path)
+        self.server.RequestHandlerClass.bridge.media = media
+        connection = http.client.HTTPConnection(*self.server.server_address, timeout=5)
+        self.addCleanup(connection.close)
+        for header, expected in [('bytes=10-19', bytes(range(10, 20))), ('bytes=-5', bytes(range(95, 100)))]:
+            connection.request('GET', url, headers={'Range': header})
+            response = connection.getresponse()
+            self.assertEqual(response.status, 206)
+            self.assertEqual(response.read(), expected)
+        connection.request('GET', '/media/not-a-token')
+        response = connection.getresponse()
+        self.assertEqual(response.status, 404)
+        response.read()
+
     def request(self, path, body, content_type):
         connection = http.client.HTTPConnection(*self.server.server_address, timeout=5)
         try:

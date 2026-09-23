@@ -10,56 +10,45 @@
 <body>
 
 <div class="obs-menu-bar">
-  <a href="#">Файл</a>
-  <a href="#">Вид</a>
-  <a href="#">Совещания</a>
-  <a href="#">Профиль</a>
-  <a href="#">Инструменты</a>
-  <a href="#">Помощь</a>
+  <button onclick="showWorkspaceTab('work')">Рабочая сессия</button>
+  <button onclick="showWorkspaceTab('history')">История</button>
+  <button onclick="triggerFileInput()">Загрузить аудио</button>
+  <button onclick="openSettingsModal()">Настройки</button>
 </div>
-
 <div class="obs-main-workspace">
-  
-  <!-- Left Column -->
   <div class="obs-col obs-col-left">
-    
-    <!-- Scenes -->
-    <div class="obs-panel">
-      <div class="obs-panel-header">Совещания <i class="fa-solid fa-window-restore"></i></div>
-      <div class="obs-panel-content" id="historyList">
-        <!-- JS fills this -->
+    <div class="obs-panel session-panel">
+      <div class="workspace-tabs">
+        <button id="workTabButton" class="active" onclick="showWorkspaceTab('work')">Сессия</button>
+        <button id="historyTabButton" onclick="showWorkspaceTab('history')">История</button>
       </div>
-      <div class="obs-panel-toolbar">
-        <button title="Добавить демо 1" onclick="openDemoMeeting('meeting_01')"><i class="fa-solid fa-plus"></i></button>
-        <button title="Удалить"><i class="fa-solid fa-trash"></i></button>
-        <button title="Копировать"><i class="fa-solid fa-copy"></i></button>
-        <button><i class="fa-solid fa-chevron-up"></i></button>
-        <button><i class="fa-solid fa-chevron-down"></i></button>
-      </div>
+      <div class="obs-panel-content" id="workList"><div class="empty-state">Нет текущих записей.<br>Начните запись или загрузите аудио.</div></div>
+      <div class="obs-panel-content" id="historyList" hidden></div>
     </div>
-    
-    <!-- Sources -->
-    <div class="obs-panel">
-      <div class="obs-panel-header">Источники <i class="fa-solid fa-window-restore"></i></div>
-      <div class="obs-panel-content">
-        <div class="source-item">
-          <i class="fa-solid fa-eye"></i> <i class="fa-solid fa-lock"></i> 🎙️ 
-          <select id="micDeviceSelect"></select>
+    <div class="obs-panel sources-panel">
+      <div class="obs-panel-header">Источники <span id="sourceStateLabel">Выберите источник</span></div>
+      <div class="obs-panel-content" id="sourceRows">
+        <div class="source-item selected" data-source="mic" onclick="selectSource('mic')">
+          <button class="source-toggle" id="micEnabled" title="Включить / выключить микрофон" onclick="event.stopPropagation(); toggleSource('mic')" aria-pressed="true"><i class="fa-solid fa-eye"></i></button>
+          <button id="micLocked" title="Зафиксировать выбор устройства" onclick="event.stopPropagation(); lockSource('mic')" aria-pressed="false"><i class="fa-solid fa-lock-open"></i></button>
+          <select id="micDeviceSelect" aria-label="Микрофон"></select>
         </div>
-        <div class="source-item">
-          <i class="fa-solid fa-eye"></i> <i class="fa-solid fa-lock"></i> 🔊 
-          <select id="loopbackDeviceSelect"></select>
+        <div class="source-item" data-source="sys" onclick="selectSource('sys')">
+          <button class="source-toggle" id="sysEnabled" title="Включить / выключить системный звук" onclick="event.stopPropagation(); toggleSource('sys')" aria-pressed="true"><i class="fa-solid fa-eye"></i></button>
+          <button id="sysLocked" title="Зафиксировать выбор устройства" onclick="event.stopPropagation(); lockSource('sys')" aria-pressed="false"><i class="fa-solid fa-lock-open"></i></button>
+          <select id="loopbackDeviceSelect" aria-label="Системный звук"></select>
         </div>
-        <div class="source-item" style="cursor: pointer" onclick="triggerFileInput()">
-          <i class="fa-solid fa-eye"></i> <i class="fa-solid fa-lock"></i> 📁 Файл аудио (импорт)
-        </div>
+        <button class="import-source" onclick="triggerFileInput()"><i class="fa-solid fa-folder-open"></i> Файл аудио — загрузить</button>
       </div>
       <div class="obs-panel-toolbar">
-        <button onclick="triggerFileInput()"><i class="fa-solid fa-plus"></i></button>
-        <button><i class="fa-solid fa-trash"></i></button>
-        <button><i class="fa-solid fa-gear"></i></button>
-        <button><i class="fa-solid fa-chevron-up"></i></button>
-        <button><i class="fa-solid fa-chevron-down"></i></button>
+        <button title="Добавить источник" onclick="openSourcePicker()"><i class="fa-solid fa-plus"></i></button>
+        <button title="Убрать выбранный источник" onclick="removeSource()"><i class="fa-solid fa-trash"></i></button>
+        <button title="Обновить устройства" onclick="refreshSources()"><i class="fa-solid fa-rotate"></i></button>
+        <button title="Переместить выше" onclick="moveSource(-1)"><i class="fa-solid fa-chevron-up"></i></button>
+        <button title="Переместить ниже" onclick="moveSource(1)"><i class="fa-solid fa-chevron-down"></i></button>
+      </div>
+      <div id="sourcePicker" class="source-picker" hidden>
+        <button onclick="addSource('mic')">Микрофон</button><button onclick="addSource('sys')">Системный звук</button><button onclick="triggerFileInput()">Аудиофайл</button>
       </div>
     </div>
   </div>
@@ -70,7 +59,7 @@
     <!-- Preview Monitor -->
     <div class="obs-preview-monitor">
       <video id="screenVideoPreview" autoplay playsinline muted style="display:none;"></video>
-      <canvas id="waveformCanvas" width="800" height="450"></canvas>
+      <canvas id="waveformCanvas" width="800" height="190"></canvas>
       <div class="monitor-overlay">
         <div style="display:flex;gap:10px;">
           <span class="rec-badge" id="recBadge"><i class="fa-solid fa-circle"></i> REC</span>
@@ -80,6 +69,21 @@
           <span class="timer-display" id="recTimer">00:00:00</span>
         </div>
       </div>
+    </div>
+
+    <div class="obs-panel live-panel">
+      <div class="workspace-tabs"><button id="liveViewButton" class="active" onclick="showStreamView('live')">Живая стенограмма</button><button id="fileViewButton" onclick="showStreamView('file')">Обработка файла</button></div>
+      <div id="liveView" class="stream-view">
+        <div class="stream-heading"><span id="liveStage">Сессия ещё не начата</span><span id="liveLag"></span></div>
+        <div id="liveTranscript" class="stream-text"><div class="empty-state">Во время записи здесь появится речь участников.<br>Фрагменты по 8 секунд; задержка зависит от скорости компьютера.</div></div>
+        <div class="chunk-controls"><button id="listenLiveChunk" onclick="listenCurrentChunk('live')" disabled>Слушать live-фрагмент</button><span id="liveChunkRange"></span></div>
+      </div>
+      <div id="fileView" class="stream-view" hidden>
+        <div class="stream-heading"><span id="fileStage">Файл не выбран</span><span id="fileProgress"></span></div>
+        <div id="fileTranscript" class="stream-text"><div class="empty-state">Загрузите аудио. Оно обрабатывается отдельно от живой записи.</div></div>
+        <div class="chunk-controls"><button id="listenFileChunk" onclick="listenCurrentChunk('file')" disabled>Слушать обрабатываемый фрагмент</button><span id="fileChunkRange"></span><button id="openFinishedMeeting" hidden>Открыть стенограмму</button></div>
+      </div>
+      <div class="playback-strip"><div id="playbackLabel">Прослушивание фрагментов</div><audio id="monitorAudio" controls preload="metadata"></audio><div id="playbackNotice" class="muted-caption"></div></div>
     </div>
 
     <!-- Bottom Panels -->
@@ -97,7 +101,7 @@
               <div class="vu-bar" id="sysVuBar"></div>
             </div>
             <div class="mixer-db" id="sysDbVal">-inf dB</div>
-            <button class="mixer-mute"><i class="fa-solid fa-volume-high"></i></button>
+            <button class="mixer-mute" onclick="toggleSource('sys')" title="Системный звук: вкл/выкл"><i class="fa-solid fa-volume-high"></i></button>
           </div>
           
           <!-- Channel 2 Mic -->
@@ -107,11 +111,11 @@
               <div class="vu-bar" id="micVuBar"></div>
             </div>
             <div class="mixer-db" id="micDbVal">-inf dB</div>
-            <button class="mixer-mute"><i class="fa-solid fa-microphone"></i></button>
+            <button class="mixer-mute" onclick="toggleSource('mic')" title="Микрофон: вкл/выкл"><i class="fa-solid fa-microphone"></i></button>
           </div>
 
         </div>
-        <div style="padding:4px 8px;font-size:11px;color:var(--obs-text-dim);border-top:1px solid var(--obs-border);">0 hidden</div>
+        <div style="padding:4px 8px;font-size:11px;color:var(--obs-text-dim);border-top:1px solid var(--obs-border);"><span id="waveSourceLabel">Индикаторы входящего звука</span></div>
       </div>
 
       <!-- Transitions / AI Settings -->
@@ -151,7 +155,7 @@
       <div class="obs-panel-content controls-stack">
         <p style="font-size:11px;color:var(--obs-text-dim)">Перед записью уведомите участников. Звук браузера и конференций записывается через системное аудио; выбор окна необязателен.</p>
         <button id="btnStartRec" onclick="toggleRecording()"><i class="fa-solid fa-play"></i> <span id="btnRecordText">Начать запись</span></button>
-        <button id="btnStopRec" onclick="toggleRecording()" disabled><i class="fa-solid fa-stop"></i> Остановить и обработать</button>
+        <button id="btnStopRec" onclick="stopRecording()" disabled><i class="fa-solid fa-stop"></i> Сохранить и обработать</button>
         <button id="btnPauseRec" onclick="togglePauseRecording()" disabled><i class="fa-solid fa-pause"></i> Пауза</button>
         
         <div class="obs-separator"></div>
@@ -198,7 +202,7 @@
         <span id="metaDuration">--</span>
       </div>
     </div>
-    <button class="protocol-close" onclick="toggleProtocolPanel()"><i class="fa-solid fa-xmark"></i></button>
+    <div class="protocol-actions"><button onclick="exportDocx()">Word</button><button onclick="exportPdf()">PDF</button><button onclick="exportTranscript()">TXT</button><button class="protocol-close" onclick="toggleProtocolPanel()" title="Закрыть протокол"><i class="fa-solid fa-xmark"></i></button></div>
   </div>
   
   <div class="protocol-tabs">
@@ -275,6 +279,7 @@
 
     <!-- Transcript Tab -->
     <div id="tabContentTranscript" class="tab-pane">
+      <audio id="archiveAudio" controls preload="metadata" hidden></audio><canvas id="playbackCanvas" width="800" height="52"></canvas>
       <button onclick="exportTranscript()" style="margin-bottom:12px">Сохранить стенограмму TXT</button>
       <input type="text" id="transcriptSearch" placeholder="Поиск по стенограмме..." oninput="filterTranscript()" style="margin-bottom:15px;">
       <div id="dialogueChat" style="display:flex;flex-direction:column;gap:15px;"></div>
@@ -343,5 +348,6 @@
 </div>
 
 <script src="main.js"></script>
+<script src="workspace.js"></script>
 </body>
 </html>

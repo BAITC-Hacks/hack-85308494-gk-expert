@@ -36,42 +36,7 @@ async function callApi(method, params = {}) {
 }
 
 let isProcessing = false;
-let processingPoll = null;
-function setProcessing(active) {
-  isProcessing = active;
-  document.body.classList.toggle('processing', active);
-  document.getElementById('btnStartRec').disabled = active;
-  document.getElementById('btnStopRec').disabled = active || !isRecording;
-  document.getElementById('audioFileInput').disabled = active;
-  if (processingPoll) clearInterval(processingPoll);
-  if (active) {
-    const started = Date.now();
-    processingPoll = setInterval(async () => {
-      try {
-        const state = await callApi('get_processing_status');
-        if (state.busy) updateAiThought(`${state.stage} ? ${Math.floor((Date.now() - started) / 1000)} ?`);
-      } catch (_) { /* The main request displays connection failures. */ }
-    }, 1000);
-  }
-}
-
-// --------------------------------------------------------------------------
-// INITIALIZATION
-// --------------------------------------------------------------------------
-window.addEventListener('DOMContentLoaded', async () => {
-  startWaveformAnimation();
-  initAudioDevices();
-  loadCompanies();
-  loadHistoryList();
-
-  updateAiThought("Загрузите аудио или начните запись. Обработка выполняется на этом компьютере.");
-});
-
-window.addEventListener('pywebviewready', () => {
-  initAudioDevices();
-  loadCompanies();
-  loadHistoryList();
-});
+window.addEventListener('DOMContentLoaded', () => initWorkspace());
 
 // --------------------------------------------------------------------------
 // COMPANIES & GROUPS
@@ -260,255 +225,6 @@ function onTrackModeChange() {
 }
 
 // --------------------------------------------------------------------------
-// RECORDING LOGIC
-// --------------------------------------------------------------------------
-async function toggleRecording() {
-  const btn = document.getElementById('btnStartRec');
-  const btnText = document.getElementById('btnRecordText');
-  const pauseBtn = document.getElementById('btnPauseRec');
-  const recBadge = document.getElementById('recBadge');
-  const statusPill = document.getElementById('liveStatusPill');
-
-  if (isProcessing) return;
-  if (!isRecording) {
-    const trackMode = document.getElementById('audioTrackSelect').value;
-    const micVal = document.getElementById('micDeviceSelect').value;
-    const micIndex = (micVal !== "" && !isNaN(micVal)) ? parseInt(micVal, 10) : null;
-    const loopVal = document.getElementById('loopbackDeviceSelect').value;
-    const loopIndex = (loopVal !== "" && !isNaN(loopVal)) ? parseInt(loopVal, 10) : null;
-
-    try {
-      updateAiThought("Запуск многодорожечной записи (микрофон + WASAPI loopback)...");
-      await callApi('start_recording', { mode: trackMode, mic_index: micIndex, loopback_index: loopIndex });
-
-      isRecording = true;
-      document.getElementById('btnStopRec').disabled = false;
-      isPaused = false;
-      btn.classList.add('recording-active');
-      btnText.textContent = "ОСТАНОВИТЬ И ОБРАБОТАТЬ";
-      pauseBtn.disabled = false;
-      recBadge.style.display = 'inline-block';
-      statusPill.innerHTML = '<span class="dot" style="background:#ef4444;box-shadow:0 0 8px #ef4444"></span> Запись идет';
-      statusPill.style.color = '#ef4444';
-
-      startVuPolling();
-      updateAiThought("Идет раздельная запись совещания: дорожка докладчика и дорожка Zoom/Discord фиксируются независимо.");
-    } catch (err) {
-      alert("Ошибка запуска записи: " + err.message);
-    }
-  } else {
-    setProcessing(true);
-    btn.disabled = true;
-    btnText.textContent = "СВЕДЕНИЕ И АНАЛИЗ ИИ...";
-    pauseBtn.disabled = true;
-    recBadge.style.display = 'none';
-    statusPill.innerHTML = '<span class="dot" style="background:#3b82f6;box-shadow:0 0 8px #3b82f6"></span> Анализ ИИ...';
-    statusPill.style.color = '#3b82f6';
-    stopVuPolling();
-
-    updateAiThought("Сведение аудиодорожек. Локальное распознавание речи и выделение поручений...");
-
-    try {
-      const selectedEngine = document.getElementById('engineSelect') ? document.getElementById('engineSelect').value : 'offline';
-      const result = await callApi('stop_and_process', { model: selectedEngine });
-      isRecording = false;
-      setProcessing(false);
-      btn.classList.remove('recording-active');
-      btn.disabled = false;
-      btnText.textContent = "НАЧАТЬ ЗАПИСЬ СОВЕЩАНИЯ";
-      statusPill.innerHTML = '<span class="dot"></span> Готов';
-      statusPill.style.color = '#10b981';
-
-      if (result && result.meeting) {
-        renderMeeting(result.meeting);
-        loadHistoryList();
-        updateAiThought(`Протокол готов! Найдено ${result.meeting.tasks.length} поручений и ${result.meeting.key_moments.length} ключевых моментов.`);
-      }
-    } catch (err) {
-      isRecording = false;
-      setProcessing(false);
-      isPaused = false;
-      btn.classList.remove('recording-active');
-      btn.disabled = false;
-      btnText.textContent = "НАЧАТЬ ЗАПИСЬ СОВЕЩАНИЯ";
-      statusPill.innerHTML = '<span class="dot"></span> Готов';
-      statusPill.style.color = '#10b981';
-      alert("Ошибка обработки аудио: " + err.message);
-      updateAiThought("Ошибка при обработке записи: " + err.message);
-    }
-  }
-}
-
-async function togglePauseRecording() {
-  if (!isRecording) return;
-  const pauseBtn = document.getElementById('btnPauseRec');
-  await callApi('pause_recording');
-  isPaused = !isPaused;
-  if (isPaused) {
-    pauseBtn.innerHTML = '<i class="fa-solid fa-play"></i>';
-    pauseBtn.classList.add('btn-primary');
-    updateAiThought("Запись временно приостановлена.");
-  } else {
-    pauseBtn.innerHTML = '<i class="fa-solid fa-pause"></i>';
-    pauseBtn.classList.remove('btn-primary');
-    updateAiThought("Запись продолжена.");
-  }
-}
-
-function startVuPolling() {
-  vuMeterInterval = setInterval(async () => {
-    try {
-      const status = await callApi('get_recording_status');
-      if (status) {
-        const secs = Math.floor(status.elapsed_seconds || 0);
-        const h = String(Math.floor(secs / 3600)).padStart(2, '0');
-        const m = String(Math.floor((secs % 3600) / 60)).padStart(2, '0');
-        const s = String(secs % 60).padStart(2, '0');
-        document.getElementById('recTimer').textContent = `${h}:${m}:${s}`;
-
-        const micVal = Math.min(100, (status.mic_level || 0) * 100);
-        const sysVal = Math.min(100, (status.system_level || 0) * 100);
-        latestAudioLevel = Math.max(status.mic_level || 0, status.system_level || 0);
-
-        document.getElementById('micVuBar').style.height = `${micVal}%`;
-        document.getElementById('sysVuBar').style.height = `${sysVal}%`;
-
-        document.getElementById('micDbVal').textContent = micVal > 1 ? `${Math.round(micVal - 60)} dB` : '-inf dB';
-        document.getElementById('sysDbVal').textContent = sysVal > 1 ? `${Math.round(sysVal - 60)} dB` : '-inf dB';
-
-        if (status.error) {
-          updateAiThought("Внимание: " + status.error);
-        }
-      }
-    } catch (e) {}
-  }, 100);
-}
-
-function stopVuPolling() {
-  if (vuMeterInterval) clearInterval(vuMeterInterval);
-  latestAudioLevel = 0;
-  document.getElementById('micVuBar').style.height = '0%';
-  document.getElementById('sysVuBar').style.height = '0%';
-  document.getElementById('micDbVal').textContent = '-inf dB';
-  document.getElementById('sysDbVal').textContent = '-inf dB';
-}
-
-// --------------------------------------------------------------------------
-// WAVEFORM VISUALIZER (STATIC AT REST, REACTS ONLY TO REAL AUDIO)
-// --------------------------------------------------------------------------
-function startWaveformAnimation() {
-  let smoothedLevel = 0;
-
-  function draw() {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    const w = canvas.width;
-    const h = canvas.height;
-    const midY = h / 2;
-
-    const bars = 48;
-    const barWidth = Math.max(2, (w / bars) - 2);
-
-    // Target audio level is strictly 0 when not recording or paused
-    const target = (isRecording && !isPaused) ? latestAudioLevel : 0;
-    smoothedLevel += (target - smoothedLevel) * 0.25;
-
-    // Completely static flat line when idle or silent
-    if (smoothedLevel < 0.01) {
-      ctx.fillStyle = '#2d333b';
-      for (let i = 0; i < bars; i++) {
-        const x = i * (barWidth + 2);
-        ctx.fillRect(x, midY - 1, barWidth, 2);
-      }
-      waveformAnimationId = requestAnimationFrame(draw);
-      return;
-    }
-
-    // Dynamic visualization based strictly on real audio RMS
-    for (let i = 0; i < bars; i++) {
-      const normalizedIdx = (i - bars / 2) / (bars / 2);
-      const envelope = Math.exp(-2.2 * normalizedIdx * normalizedIdx);
-      const barAmp = Math.min(1.0, smoothedLevel * 2.8 * envelope);
-      const barHeight = Math.max(3, barAmp * (h * 0.85));
-      const x = i * (barWidth + 2);
-      const y = midY - barHeight / 2;
-
-      const grad = ctx.createLinearGradient(0, y, 0, y + barHeight);
-      grad.addColorStop(0, '#00d64f');
-      grad.addColorStop(0.65, '#f5c210');
-      grad.addColorStop(1, '#ef4444');
-
-      ctx.fillStyle = grad;
-      ctx.fillRect(x, y, barWidth, barHeight);
-    }
-
-    waveformAnimationId = requestAnimationFrame(draw);
-  }
-  draw();
-}
-
-// --------------------------------------------------------------------------
-// FILE IMPORT & DEMOS
-// --------------------------------------------------------------------------
-function triggerFileInput() {
-  if (isRecording || isProcessing) { updateAiThought("Сначала завершите текущую запись или обработку."); return; }
-  document.getElementById('audioFileInput').click();
-}
-
-async function handleFileSelected(event) {
-  const file = event.target.files[0];
-  if (!file || isProcessing || isRecording) return;
-  setProcessing(true);
-
-  updateAiThought(`Загружен файл '${file.name}'. Начинаю анализ...`);
-  const statusPill = document.getElementById('liveStatusPill');
-  statusPill.innerHTML = '<span class="dot" style="background:#3b82f6"></span> Анализ ИИ...';
-
-  const selectedEngine = document.getElementById('engineSelect') ? document.getElementById('engineSelect').value : 'offline';
-  const formData = new FormData();
-  formData.append('audio', file);
-  formData.append('engine', selectedEngine);
-
-  try {
-    const res = await fetch('/api/upload_audio', {
-      method: 'POST',
-      body: formData
-    });
-    const data = await res.json();
-    if (data.error) {
-      alert("Ошибка обработки аудио: " + data.error);
-      updateAiThought("Ошибка обработки аудио: " + data.error);
-      return;
-    }
-    if (data.meeting) {
-      renderMeeting(data.meeting);
-      loadHistoryList();
-      updateAiThought(`Обработка завершена! Зафиксировано ${data.meeting.tasks.length} поручений.`);
-    }
-  } catch (err) {
-    console.error(err);
-    alert("Ошибка обработки файла: " + err.message);
-  } finally {
-    setProcessing(false);
-    event.target.value = '';
-    statusPill.innerHTML = '<span class="dot"></span> Готов';
-    statusPill.style.color = '#10b981';
-  }
-}
-
-async function openDemoMeeting(meetingId) {
-  updateAiThought(`Загрузка протокола совещания '${meetingId}'...`);
-  try {
-    const meeting = await callApi('get_meeting', { id: meetingId });
-    if (meeting) {
-      renderMeeting(meeting);
-      updateAiThought(`Загружено: «${meeting.title}». Найдено ${meeting.tasks.length} поручений и ${meeting.key_moments ? meeting.key_moments.length : 0} ключевых моментов.`);
-    }
-  } catch (err) {
-    console.error("Error loading demo meeting:", err);
-  }
-}
-
-// --------------------------------------------------------------------------
 // RENDER MEETING
 // --------------------------------------------------------------------------
 function renderMeeting(m) {
@@ -540,6 +256,7 @@ function renderMeeting(m) {
   renderSummary(m);
   renderTranscript(m.dialogue || []);
   renderSedCard(m);
+  configureArchiveAudio(m);
   switchTab('transcript');
 }
 
@@ -975,51 +692,6 @@ async function exportSedJson() {
 }
 
 // --------------------------------------------------------------------------
-// HISTORY LIST
-// --------------------------------------------------------------------------
-async function loadHistoryList() {
-  try {
-    const list = await callApi('list_meetings');
-    const container = document.getElementById('historyList');
-    container.innerHTML = '';
-    if (!list || list.length === 0) {
-      container.innerHTML = '<div style="font-size:0.75rem;color:var(--text-dim)">История пуста</div>';
-      return;
-    }
-
-    let filtered = list;
-    if (currentCompanyFilter !== 'all') {
-      filtered = list.filter(item => item.company_id === currentCompanyFilter);
-    }
-
-    if (filtered.length === 0) {
-      container.innerHTML = '<div style="font-size:0.75rem;color:var(--text-dim)">Нет совещаний по этой компании</div>';
-      return;
-    }
-
-    filtered.forEach(item => {
-      const el = document.createElement('div');
-      el.className = 'history-item';
-      if (currentMeetingData && currentMeetingData.id === item.id) {
-        el.classList.add('active');
-      }
-      el.onclick = () => openDemoMeeting(item.id);
-      el.innerHTML = `
-        <div class="history-item-title">${escapeHtml(item.title)}</div>
-        <div class="history-item-sub">
-          <span>${escapeHtml(item.date || '')}</span>
-          <span style="color:#38bdf8;font-weight:700">${item.tasks_count} поручений</span>
-        </div>
-      `;
-      container.appendChild(el);
-    });
-    if (!currentMeetingData && filtered.length > 0) await openDemoMeeting(filtered[0].id);
-  } catch (e) {
-    console.error("Failed to load history list:", e);
-  }
-}
-
-// --------------------------------------------------------------------------
 // TABS & UTILS
 // --------------------------------------------------------------------------
 function switchTab(tabName) {
@@ -1082,6 +754,11 @@ function escapeHtml(str) {
 }
 
 function toggleProtocolPanel() {
+  if (!currentMeetingData) {
+    showWorkspaceTab('history');
+    updateAiThought('Выберите сохранённую запись в истории, чтобы открыть протокол.');
+    return;
+  }
   const panel = document.getElementById('protocolPanel');
   if (panel) {
     panel.classList.toggle('open');
