@@ -51,7 +51,7 @@ def run(bridge, start_server):
                 samples = decode_audio(str(audio), sampling_rate=RATE)[:RATE * 8]
                 recorder = SimpleNamespace(available_seconds=lambda: len(samples) / RATE,
                     read_live_window=lambda *_: samples)
-                live = LiveTranscriber(recorder, bridge.live_stt, bridge.media, bridge.settings)
+                live = LiveTranscriber(recorder, bridge.live_stt, bridge.media, bridge.settings, speakers=bridge.live_speakers)
                 live.start()
             if "error" in result:
                 raise RuntimeError(result["error"])
@@ -75,9 +75,16 @@ def run(bridge, start_server):
             assert meeting["transcript"].strip(), "No speech detected in the test recording"
             assert meeting["processing_location"] == "local"
             assert bridge.manager.get_meeting(meeting["id"])["transcript"] == meeting["transcript"]
+            assert meeting['diarization'] == 'performed', meeting.get('warnings')
+            report['acoustic_speakers'] = len(meeting.get('speakers', []))
+            report['context_named_speakers'] = sum(bool(s.get('name')) for s in meeting.get('speakers', []))
+            report['speaker_diarization'] = meeting['diarization']
             if live:
                 assert report.get('live_text_during_file_processing'), 'No live result while file worker was active'
                 report['live_characters'] = sum(len(s['text']) for s in live.status()['segments'])
+                assert not live.status().get('speaker_error'), live.status().get('speaker_error')
+                report['live_voice_profiles'] = len(live.status().get('speakers', []))
+                assert report['live_voice_profiles'] > 0, 'No voice labels in live transcription'
             if meeting.get('audio_url'):
                 request = urllib.request.Request(f"http://127.0.0.1:{port}" + meeting['audio_url'], headers={'Range': 'bytes=0-43'})
                 with opener.open(request) as response:

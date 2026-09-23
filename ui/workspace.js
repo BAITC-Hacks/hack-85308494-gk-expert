@@ -12,7 +12,45 @@ let recordTransition = false;
 let uploadInProgress = false;
 let audioContext = null;
 let activePlayback = null;
+let protocolSelection = {kind: 'none', id: null};
+let selectionVersion = 0;
+let archiveSampleEnd = null;
 const audioNodes = new WeakMap();
+
+function invalidateProtocol(kind, id = null) {
+  selectionVersion++;
+  protocolSelection = {kind, id};
+  currentMeetingData = null;
+  document.getElementById('protocolPanel').classList.remove('open');
+  for (const player of document.querySelectorAll('audio')) { player.pause(); player.removeAttribute('src'); player.load(); }
+  document.getElementById('playbackLabel').textContent = 'Прослушивание выбранной записи';
+}
+function selectFileJob(job) {
+  selectedJobId = job.id; lastJob = job;
+  invalidateProtocol('job', job.id);
+  const container = document.getElementById('fileTranscript');
+  delete container.dataset.signature; renderStream('fileTranscript', job.segments || []);
+  document.getElementById('fileStage').textContent = job.stage || 'Подготовка';
+  document.getElementById('openFinishedMeeting').hidden = job.state !== 'done';
+  updateChunkControls('file', job.current_chunk);
+  showStreamView('file');
+}
+async function ensureSelectedMeeting() {
+  if (currentMeetingData) return currentMeetingData;
+  const version = selectionVersion;
+  if (protocolSelection.kind === 'job') {
+    const job = await callApi('get_job', {id: protocolSelection.id});
+    if (version !== selectionVersion) return null;
+    if (job.state !== 'done') { updateAiThought('Протокол выбранного файла ещё готовится. Дождитесь окончания обработки.'); return null; }
+    await openDemoMeeting(job.meeting_id, 'job');
+    return currentMeetingData;
+  }
+  if (protocolSelection.kind === 'history' && protocolSelection.id) {
+    await openDemoMeeting(protocolSelection.id); return currentMeetingData;
+  }
+  updateAiThought('Выберите обработанный файл или запись в истории.');
+  return null;
+}
 
 function clockText(value) {
   const seconds = Math.max(0, Math.floor(value || 0));
@@ -64,9 +102,12 @@ async function loadHistoryList() {
   } catch (error) { updateAiThought(error.message); }
 }
 
-async function openDemoMeeting(id) {
+async function openDemoMeeting(id, kind = 'history') {
+  invalidateProtocol(kind, kind === 'job' ? selectedJobId : id);
+  const version = selectionVersion;
   try {
     const meeting = await callApi('get_meeting', {id});
+    if (version !== selectionVersion) return;
     if (!meeting) throw new Error('Запись не найдена');
     renderMeeting(meeting);
     updateAiThought(`Открыта запись от ${savedTime(meeting.recording_saved_at || meeting.saved_at || meeting.created_at)}`);
@@ -74,6 +115,8 @@ async function openDemoMeeting(id) {
 }
 
 function showStreamView(view) {
+  if (view === 'file' && selectedJobId && (protocolSelection.kind !== 'job' || protocolSelection.id !== selectedJobId)) invalidateProtocol('job', selectedJobId);
+  if (view === 'live' && isRecording && protocolSelection.kind !== 'live') invalidateProtocol('live');
   streamView = view;
   for (const name of ['live', 'file']) {
     document.getElementById(name + 'View').hidden = view !== name;
@@ -161,6 +204,7 @@ async function toggleRecording() {
     await callApi('start_recording', {mode: mic && sys ? 'mix' : mic ? 'mic' : 'system', mic_index: deviceIndex('micDeviceSelect'),
       loopback_index: deviceIndex('loopbackDeviceSelect'), mic_muted: !mic, sys_muted: !sys});
     isRecording = true;
+    invalidateProtocol('live');
     isPaused = false;
     lastLive = {state: 'listening', segments: []};
     document.getElementById('liveTranscript').innerHTML = '<div class="empty-state">Запись идёт. Ожидание первого фрагмента…</div>';
@@ -178,7 +222,7 @@ async function stopRecording() {
   updateSourceControls();
   try {
     const result = await callApi('stop_recording_job');
-    selectedJobId = result.job.id;
+    selectFileJob(result.job);
     updateAiThought('Запись сохранена. Итоговый протокол готовится в отдельном потоке.');
     showStreamView('file');
   } catch (error) { updateAiThought('Ошибка сохранения: ' + error.message); }
@@ -202,12 +246,21 @@ async function handleFileSelected(event) {
   if (!file || uploadInProgress) return;
   uploadInProgress = true;
   try {
+    invalidateProtocol('upload', file.name);
+    selectedJobId = null; lastJob = null;
+    delete document.getElementById('fileTranscript').dataset.signature;
+    renderStream('fileTranscript', []);
+    document.getElementById('fileStage').textContent = 'Загрузка: ' + file.name;
+    document.getElementById('fileProgress').textContent = '';
+    document.getElementById('openFinishedMeeting').hidden = true;
+    updateChunkControls('file', null);
+    showStreamView('file');
     updateAiThought('Загрузка: ' + file.name);
     const data = new FormData(); data.append('audio', file);
     const response = await fetch('/api/upload_audio', {method: 'POST', body: data});
     const result = await response.json();
     if (result.error) throw new Error(result.error);
-    selectedJobId = result.job.id;
+    selectFileJob(result.job);
     showWorkspaceTab('work'); showStreamView('file');
     document.getElementById('protocolPanel').classList.remove('open');
     updateAiThought('Файл поставлен в очередь. Запись и live могут работать одновременно.');
@@ -218,12 +271,12 @@ async function handleFileSelected(event) {
 
 function renderStream(id, segments) {
   const container = document.getElementById(id);
-  const signature = segments.map(s => `${s.start}:${s.text}`).join('|');
+  const signature = segments.map(s => `${s.start}:${s.speaker || ''}:${s.text}`).join('|');
   if (container.dataset.signature === signature) return;
   container.dataset.signature = signature;
   if (!segments.length) { container.innerHTML = '<div class="empty-state">Ожидание распознавания…</div>'; return; }
   const atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 60;
-  container.innerHTML = segments.map(s => `<div class="live-line"><time>${clockText(s.start)}</time><span>${escapeHtml(s.text)}</span></div>`).join('');
+  container.innerHTML = segments.map(s => `<div class="live-line"><time>${clockText(s.start)}</time><span>${s.speaker ? `<strong class="stream-speaker">${escapeHtml(s.speaker)}</strong>` : ''}${escapeHtml(s.text)}</span></div>`).join('');
   if (atBottom) container.scrollTop = container.scrollHeight;
 }
 function updateChunkControls(kind, chunk) {
@@ -241,7 +294,7 @@ function renderJobs() {
   for (const job of [...jobsSnapshot].reverse()) {
     const button = document.createElement('button'); button.className = 'history-item' + (job.id === selectedJobId ? ' active' : '');
     button.innerHTML = `<strong>${escapeHtml(job.name)}</strong><span>${escapeHtml(job.stage)}</span><small>${escapeHtml(savedTime(job.created_at))}</small>`;
-    button.onclick = () => { selectedJobId = job.id; lastJob = null; delete document.getElementById('fileTranscript').dataset.signature; showStreamView('file'); pollWorkspace(); };
+    button.onclick = () => { selectFileJob(job); pollWorkspace(); };
     container.appendChild(button);
   }
 }
@@ -268,13 +321,21 @@ async function pollWorkspace() {
     }
     jobsSnapshot = jobs; renderJobs();
     if (selectedJobId) {
-      lastJob = await callApi('get_job', {id: selectedJobId});
+      const requestedId = selectedJobId;
+      const receivedJob = await callApi('get_job', {id: requestedId});
+      if (requestedId !== selectedJobId) return;
+      lastJob = receivedJob;
       document.getElementById('fileStage').textContent = lastJob.error || lastJob.stage;
       document.getElementById('fileProgress').textContent = `${clockText(lastJob.completed_seconds)} / ${clockText(lastJob.total_seconds)}`;
       renderStream('fileTranscript', lastJob.segments || []); updateChunkControls('file', lastJob.current_chunk);
       const openButton = document.getElementById('openFinishedMeeting');
       openButton.hidden = lastJob.state !== 'done';
-      openButton.onclick = () => openDemoMeeting(lastJob.meeting_id);
+      openButton.onclick = () => { if (lastJob?.id === selectedJobId && lastJob.state === 'done') openDemoMeeting(lastJob.meeting_id, 'job'); };
+    }
+    if (protocolSelection.kind === 'fragment') {
+      const version = selectionVersion;
+      const fragment = await callApi('get_meeting', {id: protocolSelection.id});
+      if (version === selectionVersion && currentMeetingData?.id === fragment.id && currentMeetingData.fragment_version !== fragment.fragment_version) renderMeeting(fragment);
     }
     setProcessing(jobs.some(j => j.state === 'running'));
     document.getElementById('liveStatusPill').textContent = isRecording ? (isPaused ? 'Запись на паузе' : '● Запись + live') : isProcessing ? 'Обработка файла' : 'Готов';
@@ -285,6 +346,9 @@ async function pollWorkspace() {
 function setProcessing(active) { isProcessing = active; document.body.classList.toggle('processing', active); }
 
 function setupPlayer(player) {
+  player.addEventListener('timeupdate', () => {
+    if (player.id === 'archiveAudio' && archiveSampleEnd !== null && player.currentTime >= archiveSampleEnd) { archiveSampleEnd = null; player.pause(); }
+  });
   player.addEventListener('play', async () => {
     for (const other of document.querySelectorAll('audio')) if (other !== player) other.pause();
     if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
@@ -302,13 +366,17 @@ function setupPlayer(player) {
 async function listenCurrentChunk(kind) {
   const chunk = (kind === 'live' ? lastLive : lastJob)?.current_chunk;
   if (!chunk) return;
-  const player = document.getElementById('monitorAudio');
+  const identifier = 'fragment_' + chunk.audio_url.split('/').pop();
+  await openDemoMeeting(identifier, 'fragment');
+  if (currentMeetingData?.id !== identifier) return;
+  const player = document.getElementById('archiveAudio');
   document.getElementById('playbackLabel').textContent = `Прослушивание ${clockText(chunk.start)} — ${clockText(chunk.end)}`;
-  player.src = chunk.audio_url;
   try { await player.play(); } catch (error) { updateAiThought('Не удалось воспроизвести фрагмент: ' + error.message); }
 }
 function configureArchiveAudio(meeting) {
+  archiveSampleEnd = null;
   const player = document.getElementById('archiveAudio');
+  if (meeting.audio_url && player.getAttribute('src') === meeting.audio_url) return;
   player.pause(); player.removeAttribute('src'); player.hidden = !meeting.audio_url;
   if (meeting.audio_url) player.src = meeting.audio_url;
 }
@@ -341,8 +409,9 @@ function startWaveformAnimation() {
 }
 
 async function saveExport(format) {
-  if (!currentMeetingData) { updateAiThought('Выберите сохранённую запись в истории.'); return; }
   try {
+    if (!await ensureSelectedMeeting()) return;
+    if (currentMeetingData.is_fragment && !currentMeetingData.fragment_ready) { updateAiThought('Этот фрагмент ещё распознаётся. Дождитесь появления текста.'); return; }
     const result = await callApi('save_export', {meeting_id: currentMeetingData.id, format});
     if (result.cancelled) return;
     if (result.download_url) {
@@ -355,3 +424,46 @@ function exportDocx() { return saveExport('docx'); }
 function exportPdf() { return saveExport('pdf'); }
 function exportTranscript() { return saveExport('txt'); }
 function exportSedJson() { return saveExport('json'); }
+
+async function reprocessSelectedMeeting() {
+  if (!currentMeetingData) return;
+  try {
+    const result = await callApi('reprocess_meeting', {id: currentMeetingData.id});
+    selectFileJob(result.job); showWorkspaceTab('work');
+    updateAiThought('Создаётся новый протокол с различением голосов. Предыдущий сохранён в истории.');
+  } catch (error) { updateAiThought(error.message); }
+}
+
+function renderSpeakerCards(meeting) {
+  document.getElementById('reprocessMeetingButton').hidden = !!meeting.is_fragment;
+  const container = document.getElementById('speakerCards'); container.replaceChildren();
+  for (const profile of meeting.speakers || []) {
+    const card = document.createElement('div'); card.className = 'speaker-card';
+    const title = document.createElement('strong'); title.textContent = profile.label;
+    const status = document.createElement('span'); status.className = 'speaker-status';
+    status.textContent = ({confirmed: 'Подтверждено вами', inferred: 'Имя по контексту — проверьте', self_introduced: 'Представился в записи', conflict: 'Противоречивые обращения', unresolved: 'Имя пока неизвестно'})[profile.name_status] || '';
+    const input = document.createElement('input'); input.value = profile.name || ''; input.placeholder = 'Имя этого голоса'; input.maxLength = 120;
+    const save = document.createElement('button'); save.textContent = 'Подтвердить имя';
+    save.onclick = async () => {
+      const version = selectionVersion; save.disabled = true;
+      try {
+        const result = await callApi('update_speaker_name', {meeting_id: meeting.id, speaker_id: profile.id, name: input.value});
+        if (version === selectionVersion) renderMeeting(result);
+      } catch (error) { updateAiThought(error.message); }
+      finally { save.disabled = false; }
+    };
+    const listen = document.createElement('button'); listen.textContent = 'Послушать голос'; listen.disabled = !meeting.audio_url;
+    listen.onclick = () => {
+      const player = document.getElementById('archiveAudio');
+      archiveSampleEnd = profile.sample_end;
+      player.currentTime = profile.sample_start || 0; player.play().catch(error => updateAiThought(error.message));
+    };
+    card.append(title, status, input, save, listen);
+    if (profile.evidence?.length) {
+      const details = document.createElement('details'); const heading = document.createElement('summary'); heading.textContent = 'Почему предложено это имя'; details.appendChild(heading);
+      for (const evidence of profile.evidence) { const line = document.createElement('p'); line.textContent = `${clockText(evidence.start)} · ${evidence.name}: «${evidence.quote}»`; details.appendChild(line); }
+      card.appendChild(details);
+    }
+    container.appendChild(card);
+  }
+}

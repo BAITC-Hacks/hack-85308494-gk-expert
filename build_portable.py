@@ -18,6 +18,10 @@ def main():
     for name in MODEL_FILES:
         if not (source_model / name).is_file():
             raise SystemExit(f'Model file missing: {source_model / name}. See LOCAL_STT.md.')
+    speaker_models = ROOT / 'models' / 'speakers'
+    for name in ('segmentation.onnx', 'embedding.onnx', 'SEGMENTATION_LICENSE', 'EMBEDDING_LICENSE', 'manifest.json'):
+        if not (speaker_models / name).is_file():
+            raise SystemExit(f'Speaker model file missing: {name}. Run scripts/prepare_speaker_models.py.')
     subprocess.run([sys.executable, '-m', 'PyInstaller', '--noconfirm',
                     '--distpath', str(dist_root), '--workpath', str(ROOT / 'build' / 'local'),
                     str(ROOT / 'QazaqProtocolLocal.spec')], cwd=ROOT, check=True)
@@ -29,6 +33,7 @@ def main():
         if source.is_file():
             shutil.copy2(source, target_model / name)
     shutil.copy2(ROOT / 'RUN_LOCAL.md', distribution / 'README.txt')
+    shutil.copytree(speaker_models, distribution / 'models' / 'speakers', dirs_exist_ok=True)
     print(f'Ready: {distribution / "QazaqProtocol.exe"}')
 
 

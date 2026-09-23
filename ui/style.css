@@ -573,6 +573,15 @@ audio { width: 100%; height: 30px; color-scheme: dark; }
 .protocol-overlay { width: min(100%, 1060px); }
 .protocol-tabs { flex-wrap: wrap; }
 .protocol-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.stream-speaker { display: block; color: #6fc5ef; font-size: 11px; margin-bottom: 3px; }
+.speaker-toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; gap: 12px; }
+.speaker-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin-bottom: 14px; }
+.speaker-card { display: flex; flex-wrap: wrap; align-content: start; gap: 7px; padding: 12px; background: #283440; border: 1px solid #435465; border-radius: 5px; }
+.speaker-card strong, .speaker-card input, .speaker-card details { width: 100%; }
+.speaker-status { color: #bbd1e2; font-size: 11px; }
+.speaker-card p { padding-top: 8px; line-height: 1.5; }
+.modal-box { max-height: 95vh; }
+.modal-body { overflow-y: auto; }
 #playbackCanvas { width: 100%; height: 52px; margin-bottom: 8px; }
 .obs-status-bar > div:first-child { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 @media (max-width: 1150px) { .obs-col-left { width: 235px; } .obs-col-right { width: 180px; } .obs-preview-monitor { flex-basis: 100px; } .obs-transitions { min-width: 210px; } .chunk-controls { gap: 5px; padding: 4px; } }

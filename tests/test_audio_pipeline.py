@@ -78,3 +78,19 @@ class PipelineTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.media.register(outside)
         self.assertIsNone(self.media.resolve('../../secret.txt'))
+
+    def test_fragment_contains_only_its_words_and_relative_timestamps(self):
+        _, url = self.media.save(np.zeros(RATE * 8), 'live')
+        self.media.publish_fragment(url, 8, 16, source='Live')
+        self.assertFalse(self.media.fragment(url.split('/')[-1])['fragment_ready'])
+        segments = [{'start': 7, 'end': 18, 'text': 'старый текущий лишний', 'speaker_id': 'a',
+                     'words': [{'word': 'старый', 'start': 7, 'end': 7.8},
+                               {'word': ' текущий', 'start': 9, 'end': 10},
+                               {'word': ' лишний', 'start': 17, 'end': 18}]}]
+        self.media.publish_fragment(url, 8, 16, segments, source='Live', diarization='performed')
+        fragment = self.media.fragment(url.split('/')[-1])
+        self.assertTrue(fragment['fragment_ready'])
+        self.assertEqual(fragment['duration'], 8)
+        self.assertEqual(fragment['segments'][0]['text'], 'текущий')
+        self.assertEqual(fragment['segments'][0]['words'][0]['start'], 1)
+        self.assertEqual(fragment['audio_url'], url)

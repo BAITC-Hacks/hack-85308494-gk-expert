@@ -114,6 +114,56 @@ def run_gui_check(window, bridge):
         assert window.evaluate_js("document.getElementById('waveformCanvas').toDataURL()") == first
         report['playback_equalizer'] = True
         cancel_native_dialog(window, bridge, report)
+        # Selecting a new file must retire the old meeting even during delayed HTTP responses.
+        from core.speaker_context import resolve_names
+        rows, profiles = resolve_names([
+            {'speaker_id': 'speaker_1', 'start': 0, 'end': 2, 'text': 'Айдар, вам слово.'},
+            {'speaker_id': 'speaker_2', 'start': 3, 'end': 6, 'text': 'Я подготовлю новый отчёт завтра.'}])
+        newer = bridge.nlp.process_transcript({'segments': rows, 'speakers': profiles, 'diarization': 'performed', 'duration': 19})
+        newer['id'] = 'ui_test_new_file'
+        bridge.manager.save_meeting(newer)
+        with bridge.jobs._lock:
+            bridge.jobs._jobs['ui_job_new'] = {'id': 'ui_job_new', 'state': 'done', 'stage': 'Сохранено', 'name': 'Новый образец', 'meeting_id': newer['id']}
+            bridge.jobs._jobs['ui_job_pending'] = {'id': 'ui_job_pending', 'state': 'queued', 'stage': 'В очереди', 'name': 'Ещё обрабатывается'}
+        try:
+            window.evaluate_js("selectFileJob({id:'ui_job_pending',state:'queued'}); toggleProtocolPanel(); exportTranscript()")
+            time.sleep(.25)
+            assert window.evaluate_js("currentMeetingData === null && !document.getElementById('protocolPanel').classList.contains('open')")
+            window.evaluate_js("window.originalTestApi = callApi; callApi = async (method, params = {}) => { if (method === 'get_meeting' && params.id === 'ui_test_only') await new Promise(r => setTimeout(r, 600)); return window.originalTestApi(method, params); }; openDemoMeeting('ui_test_only'); selectFileJob({id:'ui_job_new',state:'done'}); toggleProtocolPanel()")
+            wait_js(window, "currentMeetingData?.id === 'ui_test_new_file'")
+            time.sleep(.8)
+            assert window.evaluate_js("currentMeetingData.id === 'ui_test_new_file' && currentMeetingData.audio_duration === 19")
+            window.evaluate_js("callApi = window.originalTestApi")
+            report['selected_file_protocol'] = True
+            report['stale_response_ignored'] = True
+            assert window.evaluate_js("document.querySelectorAll('.speaker-card').length === 2")
+            window.evaluate_js("let card = document.querySelectorAll('.speaker-card')[1]; card.querySelector('input').value = 'Әлия'; card.querySelector('button').click()")
+            wait_js(window, "currentMeetingData?.speakers?.[1]?.name_status === 'confirmed'")
+            saved = bridge.manager.get_meeting(newer['id'])
+            assert saved['dialogue'][1]['speaker'] == 'Әлия'
+            assert saved['tasks'][0]['assignee'] == 'Әлия'
+            txt = Path(bridge.export_transcript({'meeting_id': newer['id']})['filepath']).read_text(encoding='utf-8-sig')
+            assert 'Әлия' in txt
+            report['speaker_name_correction'] = True
+            _, fragment_url = bridge.media.save(np.zeros(16000 * 8, dtype=np.float32), 'ui_fragment')
+            bridge.media.publish_fragment(fragment_url, 8, 16, source='Live-запись')
+            chunk = {'start': 8, 'end': 16, 'audio_url': fragment_url}
+            window.evaluate_js('lastLive.current_chunk = ' + json.dumps(chunk) + "; listenCurrentChunk('live')")
+            wait_js(window, "currentMeetingData?.is_fragment === true && currentMeetingData.audio_duration === 8")
+            assert window.evaluate_js("currentMeetingData.fragment_ready === false && currentMeetingData.transcript === ''")
+            bridge.media.publish_fragment(fragment_url, 8, 16, [{'start': 9, 'end': 12, 'text': 'Только короткий фрагмент.'}], source='Live-запись')
+            wait_js(window, "currentMeetingData.fragment_ready === true && document.getElementById('dialogueChat').innerText.includes('Только короткий фрагмент.')")
+            wait_js(window, "document.getElementById('archiveAudio').duration === 8")
+            assert window.evaluate_js("!document.getElementById('dialogueChat').innerText.includes('новый отчёт')")
+            fragment_id = 'fragment_' + fragment_url.split('/')[-1]
+            exported = Path(bridge.export_transcript({'meeting_id': fragment_id})['filepath']).read_text(encoding='utf-8-sig')
+            assert 'Только короткий фрагмент.' in exported and 'новый отчёт' not in exported
+            report['live_fragment_exact_audio_and_text'] = True
+            report['fragment_export'] = True
+        finally:
+            with bridge.jobs._lock:
+                bridge.jobs._jobs.pop('ui_job_new', None)
+                bridge.jobs._jobs.pop('ui_job_pending', None)
         report.update(ok=True, engine="offline", idle_waveform_static=True, unicode_transcript=True,
                       task_table=True, parallel_controls=True, actual_webview2=True)
     except Exception:

@@ -68,6 +68,8 @@ from core.meeting_manager import MeetingManager
 from core.company_group_manager import CompanyGroupManager
 from core.audio_pipeline import MediaStore, WindowTranscriber, ProcessingJobs, LiveTranscriber, now_iso
 from core.save_dialog import ExportSaver
+from core.speaker_engine import SpeakerEngine
+from core.speaker_context import resolve_names, roster_names
 
 try:
     import webview
@@ -95,7 +97,9 @@ class ProtocolApiBridge:
         self.stt = SpeechToTextEngine()
         self.live_stt = SpeechToTextEngine(live=True)
         self.media = MediaStore(os.path.join(DATA_DIR, "storage", "playback"))
-        self.windows = WindowTranscriber(self.stt, self.media)
+        self.speakers = SpeakerEngine()
+        self.live_speakers = SpeakerEngine()
+        self.windows = WindowTranscriber(self.stt, self.media, speakers=self.speakers)
         self.live = None
         self.nlp = NLPExtractor()
         self.exporter = ExportService(output_dir=os.path.join(DATA_DIR, "storage", "protocols"))
@@ -122,7 +126,7 @@ class ProtocolApiBridge:
             result = self.recorder.start_recording(mode=mode, mic_index=mic_idx, loopback_index=loop_idx)
             self.recorder.set_muted('mic', params.get('mic_muted', False))
             self.recorder.set_muted('sys', params.get('sys_muted', False))
-            self.live = LiveTranscriber(self.recorder, self.live_stt, self.media, self.settings)
+            self.live = LiveTranscriber(self.recorder, self.live_stt, self.media, self.settings, speakers=self.live_speakers)
             self.live.start()
             return result
 
@@ -205,6 +209,7 @@ class ProtocolApiBridge:
             meeting["id"] = "meeting_" + uuid.uuid4().hex[:16]
             meeting["date"] = time.strftime("%d.%m.%Y")
             meeting["audio_filename"] = os.path.basename(filepath)
+            meeting['source_label'] = settings.get('source_label', meeting['audio_filename'])
             meeting["playback_file"] = transcript['playback_file']
             meeting["recording_saved_at"] = settings.get('recording_saved_at', now_iso())
             meeting["company"] = settings.get('company', 'Организация')
@@ -228,10 +233,25 @@ class ProtocolApiBridge:
 
     def get_settings(self, params=None):
         return dict(self.settings, data_dir=DATA_DIR, processing_location="local",
+                    speaker_model_ready=self.speakers.ready(),
                     model_ready=all((self.stt.model_dir / name).is_file() for name in ("model.bin", "config.json", "tokenizer.json")))
 
     def get_meeting(self, params):
         meeting_id = params.get("id")
+        if str(meeting_id).startswith('fragment_'):
+            data = self.media.fragment(meeting_id.removeprefix('fragment_'))
+            if not data:
+                raise ValueError('Фрагмент недоступен. Выберите его повторно.')
+            data['text'] = ' '.join(s['text'] for s in data['segments'])
+            meeting = self.nlp.process_transcript(data)
+            def clock(value):
+                return f'{int(value) // 60:02d}:{int(value) % 60:02d}'
+            meeting.update(id=meeting_id, title=f"Фрагмент {clock(data['source_start'])} — {clock(data['source_end'])}",
+                           audio_url=data['audio_url'], source_label=data['source_label'],
+                           fragment_ready=data['fragment_ready'], fragment_version=data['fragment_version'], is_fragment=True)
+            if not data['fragment_ready']:
+                meeting['warnings'] = ['Этот фрагмент ещё распознаётся. Его текст появится автоматически.']
+            return meeting
         meeting = self.manager.get_meeting(meeting_id)
         if meeting and meeting.get('playback_file'):
             try:
@@ -247,6 +267,37 @@ class ProtocolApiBridge:
 
     def list_meetings(self, params=None):
         return self.manager.list_meetings()
+
+    def update_speaker_name(self, params):
+        meeting = self.manager.get_meeting(params.get('meeting_id'))
+        key = params.get('speaker_id')
+        if not meeting or key not in {s['id'] for s in meeting.get('speakers', [])}:
+            raise ValueError('Голос не найден в выбранном совещании.')
+        name = str(params.get('name') or '').strip()[:120]
+        old_profile = next(p for p in meeting['speakers'] if p['id'] == key)
+        old_profile.update(name=name or None, name_status='confirmed' if name else 'unresolved')
+        for line in meeting.get('dialogue', []):
+            if line.get('speaker_id') == key:
+                line.update(speaker=name or old_profile['label'], speaker_name=name or None, name_status=old_profile['name_status'])
+        for task in meeting.get('tasks', []):
+            if task.get('assignee_speaker_id') == key:
+                task.update(assignee=name or old_profile['label'], assignee_name_status=old_profile['name_status'])
+        meeting['participants'] = [{'name': p.get('name') or p['label'], 'role': 'Не указана',
+                                    'speaker_id': p['id'], 'name_status': p['name_status']} for p in meeting['speakers']]
+        self.manager.save_meeting(meeting)
+        return self.get_meeting({'id': meeting['id']})
+
+    def reprocess_meeting(self, params):
+        meeting = self.get_meeting({'id': params.get('id')})
+        if not meeting:
+            raise ValueError('Запись не найдена')
+        from pathlib import Path
+        source = self.media.root / Path(meeting.get('playback_file') or '__missing__').name
+        if not source.is_file():
+            source = Path(DATA_DIR) / 'storage' / 'recordings' / Path(meeting.get('audio_filename') or '__missing__').name
+        if not source.is_file():
+            raise ValueError('Исходное аудио этой записи отсутствует. Загрузите аудиофайл повторно.')
+        return self.submit_existing_audio(str(source), title='Повторно: ' + meeting.get('title', 'Совещание'))
 
     def update_task_status(self, params):
         meeting_id = params.get("meeting_id")
@@ -289,7 +340,7 @@ class ProtocolApiBridge:
 
     def export_docx(self, params):
         meeting_id = params.get("meeting_id")
-        meeting = self.manager.get_meeting(meeting_id)
+        meeting = self.get_meeting({'id': meeting_id})
         if not meeting:
             return {"error": "Meeting not found"}
         path = self.exporter.export_to_docx(meeting, f"Протокол_{meeting_id}.docx")
@@ -297,7 +348,7 @@ class ProtocolApiBridge:
 
     def export_pdf(self, params):
         meeting_id = params.get("meeting_id")
-        meeting = self.manager.get_meeting(meeting_id)
+        meeting = self.get_meeting({'id': meeting_id})
         if not meeting:
             return {"error": "Meeting not found"}
         path = self.exporter.export_to_pdf(meeting, f"Протокол_{meeting_id}.pdf")
@@ -305,14 +356,14 @@ class ProtocolApiBridge:
 
     def export_sed(self, params):
         meeting_id = params.get("meeting_id")
-        meeting = self.manager.get_meeting(meeting_id)
+        meeting = self.get_meeting({'id': meeting_id})
         if not meeting:
             return {"error": "Meeting not found"}
         path = self.sed.export_to_sed_json(meeting, f"СЭД_{meeting_id}.json")
         return {"filepath": os.path.abspath(path)}
 
     def export_transcript(self, params):
-        meeting = self.manager.get_meeting(params.get("meeting_id"))
+        meeting = self.get_meeting({'id': params.get('meeting_id')})
         if not meeting:
             raise ValueError("Сначала выберите совещание.")
         path = self.exporter.export_to_txt(meeting, f"Стенограмма_{meeting['id']}.txt")
@@ -340,7 +391,12 @@ class ProtocolApiBridge:
         language = params.get("language", self.settings.get("language", "auto"))
         if language not in ("auto", "ru", "kk"):
             raise ValueError("Неизвестный язык распознавания")
-        settings = {"company": company, "prompt": prompt, "language": language}
+        participants = '\n'.join(roster_names(params.get('participants', self.settings.get('participants', ''))))[:3000]
+        speaker_count = int(params.get('speaker_count', self.settings.get('speaker_count', 0)))
+        if not 0 <= speaker_count <= 32:
+            raise ValueError('Количество участников должно быть от 0 (авто) до 32.')
+        settings = {"company": company, "prompt": prompt, "language": language,
+                    'participants': participants, 'speaker_count': speaker_count}
         temporary = SETTINGS_PATH + ".tmp"
         with open(temporary, "w", encoding="utf-8") as stream:
             json.dump(settings, stream, ensure_ascii=False, indent=2)
@@ -559,6 +615,9 @@ def start_http_server(preferred_port=8000, bridge=None):
 
 
 def main():
+    if '--speaker-worker' in sys.argv:
+        from core.speaker_engine import run_speaker_worker
+        raise SystemExit(run_speaker_worker(sys.argv[sys.argv.index('--speaker-worker') + 1:]))
     bridge = ProtocolApiBridge()
     if "--self-test" in sys.argv:
         from core.self_test import run

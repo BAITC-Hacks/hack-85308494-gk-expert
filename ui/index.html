@@ -196,6 +196,7 @@
     <div>
       <div id="metaCompanyTag" class="badge badge-primary" style="margin-bottom:4px;display:inline-block">Организация</div>
       <h2 id="currentMeetingTitle">Название совещания</h2>
+      <div id="metaSource" class="muted-caption"></div>
       <div style="font-size:12px;color:var(--obs-text-dim);margin-top:4px;">
         <span id="metaDate">--</span> | 
         <span id="metaLeader">--</span> | 
@@ -279,6 +280,8 @@
 
     <!-- Transcript Tab -->
     <div id="tabContentTranscript" class="tab-pane">
+      <div class="speaker-toolbar"><span>Голоса и имена участников</span><button id="reprocessMeetingButton" onclick="reprocessSelectedMeeting()">Повторно распознать с голосами</button></div>
+      <div id="speakerCards" class="speaker-cards"></div>
       <audio id="archiveAudio" controls preload="metadata" hidden></audio><canvas id="playbackCanvas" width="800" height="52"></canvas>
       <button onclick="exportTranscript()" style="margin-bottom:12px">Сохранить стенограмму TXT</button>
       <input type="text" id="transcriptSearch" placeholder="Поиск по стенограмме..." oninput="filterTranscript()" style="margin-bottom:15px;">
@@ -323,6 +326,10 @@
       <input type="text" id="settingsCompany" placeholder="Название организации (например: АО «Самрук-Қазына Өңдеу»)">
       <label style="font-size:12px;color:var(--obs-text-dim);margin:8px 0 4px;display:block;">Отраслевой глоссарий терминов:</label>
       <textarea id="settingsPrompt" rows="3" placeholder="Ключевые термины (ПХЗ, KPI, ТБ, смета, ПНР, шала-қазақша)..."></textarea>
+      <label for="settingsParticipants">Имена участников (необязательно, по одному на строку)</label>
+      <textarea id="settingsParticipants" rows="3" placeholder="Гульмира Сериковна&#10;Тимур Булатович"></textarea>
+      <label for="settingsSpeakerCount">Количество разных голосов (0 — определить автоматически)</label>
+      <input id="settingsSpeakerCount" type="number" min="0" max="32" value="0">
       <div style="margin-top:10px;padding:8px;background:rgba(0,214,79,0.1);border:1px solid #00d64f;border-radius:4px;font-size:11px;color:#00d64f;">
         <i class="fa-solid fa-shield-halved"></i> Контур безопасности: Автономная локальная обработка (Faster-Whisper + On-Premise NLP). Передача во внешние API отключена.
       </div>

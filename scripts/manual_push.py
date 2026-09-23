@@ -16,7 +16,7 @@ ROOT_FILES = ('app.py', 'requirements.txt', 'requirements-local-stt.txt', 'run_a
               'build_portable.py', 'QazaqProtocolLocal.spec', 'README.md', 'LOCAL_STT.md', 'RUN_LOCAL.md', 'push_to_git.bat')
 TEST_FILES = ('test_audio_lifecycle.py', 'test_audio_mixing.py', 'test_stt_offline.py',
               'test_nlp_local.py', 'test_document_local.py', 'test_upload_api.py',
-              'test_audio_pipeline.py', 'test_save_dialog.py')
+              'test_audio_pipeline.py', 'test_save_dialog.py', 'test_speaker_engine.py', 'test_speaker_context.py')
 
 
 def git(*args):
@@ -45,6 +45,7 @@ def main():
     paths += [p for p in (ROOT / 'ui').rglob('*') if p.is_file() and p.suffix.lower() in {'.html','.js','.css','.svg','.ttf','.woff','.woff2','.png','.jpg'}]
     paths += [ROOT / 'tests' / name for name in TEST_FILES]
     paths += [ROOT / 'scripts' / 'manual_push.py']
+    paths += [ROOT / 'scripts' / 'prepare_speaker_models.py']
     payloads = {}
     for path in paths:
         if path.is_symlink() or not path.resolve().is_relative_to(ROOT):

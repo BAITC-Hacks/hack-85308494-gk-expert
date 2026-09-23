@@ -4,7 +4,7 @@ from PyInstaller.utils.hooks import collect_all
 datas = [('ui', 'ui')]
 binaries = []
 hiddenimports = ['core.self_test', 'pyaudiowpatch', 'soundfile', 'sounddevice', 'docx', 'dotenv', 'mss', 'scipy.signal']
-for package in ('faster_whisper', 'ctranslate2', 'av', 'onnxruntime', 'tokenizers', 'webview', 'reportlab'):
+for package in ('faster_whisper', 'ctranslate2', 'av', 'onnxruntime', 'tokenizers', 'webview', 'reportlab', 'sherpa_onnx'):
     package_data, package_binaries, package_imports = collect_all(package)
     datas += package_data
     binaries += package_binaries

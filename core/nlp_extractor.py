@@ -6,7 +6,7 @@ from typing import Dict, Optional
 
 
 class NLPExtractor:
-    """Rule-based RU/KK draft protocol. Text labels are not acoustic diarization."""
+    """Rule-based RU/KK draft protocol consuming acoustic IDs and reviewable names."""
 
     SYSTEM_PROMPT = """Ты — секретарь совещания любой организации.
 Сохраняй факты и цитаты из стенограммы на русском, казахском или смешанном языке.
@@ -68,6 +68,8 @@ class NLPExtractor:
         text = str(transcript_data.get("text") or "").strip()
         segments = transcript_data.get("segments") or ([{"text": text, "start": 0}] if text else [])
         dialogue, tasks, moments, names, sentences = [], [], [], [], []
+        profiles = transcript_data.get('speakers', [])
+        speaker_meta = {s.get('speaker'): s for s in segments if s.get('speaker_id')}
         pending, pending_stamp, pending_speaker = "", "00:00", "Говорящий не определён"
 
         def consume(sentence, stamp, speaker):
@@ -89,6 +91,10 @@ class NLPExtractor:
                     "department": "Не указано", "status": "В работе", "source_quote": sentence,
                     "timestamp": stamp, "needs_review": True,
                 })
+                identity = speaker_meta.get(speaker) if assignee == speaker else None
+                if identity:
+                    tasks[-1].update(assignee_speaker_id=identity['speaker_id'],
+                                     assignee_name_status=identity.get('name_status', 'unresolved'))
 
         for segment in segments:
             segment_text = str(segment.get("text") or "").strip()
@@ -101,7 +107,10 @@ class NLPExtractor:
             clean = label.group(2) if label else segment_text
             if speaker != "Говорящий не определён" and speaker not in names:
                 names.append(speaker)
-            dialogue.append({"speaker": speaker, "role": "", "timestamp": stamp, "text": clean})
+            dialogue.append({"speaker": speaker, "role": "", "timestamp": stamp, "text": clean,
+                             'start': start, 'end': segment.get('end', start), 'speaker_id': segment.get('speaker_id'),
+                             'speaker_name': segment.get('speaker_name'), 'name_status': segment.get('name_status', 'unresolved'),
+                             'overlap': bool(segment.get('overlap'))})
             if pending and speaker != pending_speaker:
                 consume(pending, pending_stamp, pending_speaker)
                 pending = ""
@@ -128,6 +137,10 @@ class NLPExtractor:
         warnings = ["Черновик: проверьте распознавание, поручения, ответственных и сроки."]
         if transcript_data.get("diarization") != "performed":
             warnings.append("Автоматическая диаризация голосов не выполнена; имена берутся только из явных меток стенограммы.")
+            if transcript_data.get('speaker_error'):
+                warnings.append(transcript_data['speaker_error'])
+        else:
+            warnings.append('Голоса разделены локальной моделью. Имена «по контексту» — предположения; подтвердите их в карточках голосов. Похожие голоса и одновременная речь могут распознаваться неточно.')
         if not text and not dialogue:
             warnings.append("Речь не обнаружена. Проверьте звук и выбранный источник записи.")
         return {
@@ -144,4 +157,6 @@ class NLPExtractor:
             "audio_filename": transcript_data.get("filename", ""), "audio_duration": transcript_data.get("duration", 0),
             "processed_with": "Локальные правила RU/KK", "processing_location": "local", "warnings": warnings,
             "diarization": transcript_data.get("diarization", "not_performed"),
+            'speakers': profiles, 'speaker_turns': transcript_data.get('speaker_turns', []),
+            'speaker_engine': transcript_data.get('speaker_engine', ''),
         }

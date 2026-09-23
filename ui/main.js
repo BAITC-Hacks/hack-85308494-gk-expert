@@ -234,6 +234,7 @@ function renderMeeting(m) {
 
   // Header meta & Company tag
   document.getElementById('currentMeetingTitle').textContent = m.title || "Совещание";
+  document.getElementById('metaSource').textContent = m.source_label || m.audio_filename || '';
   document.getElementById('metaCompanyTag').textContent = m.company || 'Организация';
   document.getElementById('metaDate').innerHTML = `<i class="fa-regular fa-calendar"></i> ${m.date || 'Текущая дата'}`;
   document.getElementById('metaLeader').innerHTML = `<i class="fa-solid fa-user-tie"></i> ${m.leader || 'Председатель'}`;
@@ -255,6 +256,7 @@ function renderMeeting(m) {
   renderNotesAndMemo(m);
   renderSummary(m);
   renderTranscript(m.dialogue || []);
+  renderSpeakerCards(m);
   renderSedCard(m);
   configureArchiveAudio(m);
   switchTab('transcript');
@@ -727,6 +729,8 @@ async function openSettingsModal() {
     document.getElementById('settingsCompany').value = settings.company || '';
     document.getElementById('settingsPrompt').value = settings.prompt || '';
     document.getElementById('settingsLanguage').value = settings.language || 'auto';
+    document.getElementById('settingsParticipants').value = settings.participants || '';
+    document.getElementById('settingsSpeakerCount').value = settings.speaker_count || 0;
   } catch (err) { updateAiThought(err.message); }
   document.getElementById('settingsModal').style.display = 'flex';
 }
@@ -738,7 +742,8 @@ function closeSettingsModal() {
 async function saveSettings() {
   const company = document.getElementById('settingsCompany') ? document.getElementById('settingsCompany').value.trim() : '';
   const prompt = document.getElementById('settingsPrompt') ? document.getElementById('settingsPrompt').value.trim() : '';
-  await callApi('save_settings', { company, prompt, language: document.getElementById('settingsLanguage').value });
+  await callApi('save_settings', { company, prompt, language: document.getElementById('settingsLanguage').value,
+    participants: document.getElementById('settingsParticipants').value, speaker_count: Number(document.getElementById('settingsSpeakerCount').value) });
   updateAiThought("Настройки организации успешно сохранены в локальный конфигуратор.");
   closeSettingsModal();
 }
@@ -753,10 +758,9 @@ function escapeHtml(str) {
     .replace(/'/g, '&#039;');
 }
 
-function toggleProtocolPanel() {
+async function toggleProtocolPanel() {
   if (!currentMeetingData) {
-    showWorkspaceTab('history');
-    updateAiThought('Выберите сохранённую запись в истории, чтобы открыть протокол.');
+    try { await ensureSelectedMeeting(); } catch (error) { updateAiThought(error.message); }
     return;
   }
   const panel = document.getElementById('protocolPanel');
