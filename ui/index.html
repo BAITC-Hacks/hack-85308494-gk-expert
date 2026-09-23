@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>QazaqProtocol AI — OBS Studio Style</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+
+<div class="obs-menu-bar">
+  <a href="#">Файл</a>
+  <a href="#">Вид</a>
+  <a href="#">Совещания</a>
+  <a href="#">Профиль</a>
+  <a href="#">Инструменты</a>
+  <a href="#">Помощь</a>
+</div>
+
+<div class="obs-main-workspace">
+  
+  <!-- Left Column -->
+  <div class="obs-col obs-col-left">
+    
+    <!-- Scenes -->
+    <div class="obs-panel">
+      <div class="obs-panel-header">Совещания <i class="fa-solid fa-window-restore"></i></div>
+      <div class="obs-panel-content" id="historyList">
+        <!-- JS fills this -->
+      </div>
+      <div class="obs-panel-toolbar">
+        <button title="Добавить демо 1" onclick="openDemoMeeting('meeting_01')"><i class="fa-solid fa-plus"></i></button>
+        <button title="Удалить"><i class="fa-solid fa-trash"></i></button>
+        <button title="Копировать"><i class="fa-solid fa-copy"></i></button>
+        <button><i class="fa-solid fa-chevron-up"></i></button>
+        <button><i class="fa-solid fa-chevron-down"></i></button>
+      </div>
+    </div>
+    
+    <!-- Sources -->
+    <div class="obs-panel">
+      <div class="obs-panel-header">Источники <i class="fa-solid fa-window-restore"></i></div>
+      <div class="obs-panel-content">
+        <div class="source-item">
+          <i class="fa-solid fa-eye"></i> <i class="fa-solid fa-lock"></i> 🎙️ 
+          <select id="micDeviceSelect"></select>
+        </div>
+        <div class="source-item">
+          <i class="fa-solid fa-eye"></i> <i class="fa-solid fa-lock"></i> 🔊 
+          <select id="loopbackDeviceSelect"></select>
+        </div>
+        <div class="source-item" style="cursor: pointer" onclick="triggerFileInput()">
+          <i class="fa-solid fa-eye"></i> <i class="fa-solid fa-lock"></i> 📁 Файл аудио (импорт)
+        </div>
+      </div>
+      <div class="obs-panel-toolbar">
+        <button onclick="triggerFileInput()"><i class="fa-solid fa-plus"></i></button>
+        <button><i class="fa-solid fa-trash"></i></button>
+        <button><i class="fa-solid fa-gear"></i></button>
+        <button><i class="fa-solid fa-chevron-up"></i></button>
+        <button><i class="fa-solid fa-chevron-down"></i></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Center Column -->
+  <div class="obs-col obs-col-center">
+    
+    <!-- Preview Monitor -->
+    <div class="obs-preview-monitor">
+      <video id="screenVideoPreview" autoplay playsinline muted style="display:none;"></video>
+      <canvas id="waveformCanvas" width="800" height="450"></canvas>
+      <div class="monitor-overlay">
+        <div style="display:flex;gap:10px;">
+          <span class="rec-badge" id="recBadge"><i class="fa-solid fa-circle"></i> REC</span>
+          <span class="timer-display" id="dualTrackBadge"><i class="fa-solid fa-layer-group"></i> 2 ТРЕКА (MIC + SYS)</span>
+        </div>
+        <div>
+          <span class="timer-display" id="recTimer">00:00:00</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bottom Panels -->
+    <div class="obs-panels-bottom-row">
+      
+      <!-- Mixer -->
+      <div class="obs-panel obs-mixer">
+        <div class="obs-panel-header">Аудио микшер <i class="fa-solid fa-window-restore"></i></div>
+        <div class="obs-panel-content mixer-strips">
+          
+          <!-- Channel 1 Desktop -->
+          <div class="mixer-channel">
+            <div class="mixer-label"><span class="badge badge-normal" style="background:#2a6aff;color:#fff;">Global</span><br>Desktop Audio ▼</div>
+            <div class="mixer-meter-container">
+              <div class="vu-bar" id="sysVuBar"></div>
+            </div>
+            <div class="mixer-db" id="sysDbVal">-inf dB</div>
+            <button class="mixer-mute"><i class="fa-solid fa-volume-high"></i></button>
+          </div>
+          
+          <!-- Channel 2 Mic -->
+          <div class="mixer-channel">
+            <div class="mixer-label"><span class="badge badge-normal" style="background:#2a6aff;color:#fff;">Global</span><br>Mic/Aux ▼</div>
+            <div class="mixer-meter-container">
+              <div class="vu-bar" id="micVuBar"></div>
+            </div>
+            <div class="mixer-db" id="micDbVal">-inf dB</div>
+            <button class="mixer-mute"><i class="fa-solid fa-microphone"></i></button>
+          </div>
+
+        </div>
+        <div style="padding:4px 8px;font-size:11px;color:var(--obs-text-dim);border-top:1px solid var(--obs-border);">0 hidden</div>
+      </div>
+
+      <!-- Transitions / AI Settings -->
+      <div class="obs-panel obs-transitions">
+        <div class="obs-panel-header">Обработка ИИ <i class="fa-solid fa-window-restore"></i></div>
+        <div class="obs-panel-content">
+          <label style="font-size:11px;color:var(--obs-text-dim)">Движок:</label>
+          <select id="engineSelect" onchange="onEngineChange()">
+            <option value="gpt-4o" selected>OpenAI GPT-4o</option>
+            <option value="codex-astra">Codex Astra</option>
+            <option value="offline">Offline Rule Engine</option>
+          </select>
+          
+          <label style="font-size:11px;color:var(--obs-text-dim)">Компания:</label>
+          <div style="display:flex;gap:4px;margin-bottom:10px;">
+            <select id="companyFilterSelect" onchange="onCompanyFilterChange()">
+              <option value="all">Все компании</option>
+            </select>
+            <button class="btn-secondary" onclick="openCompanyModal()"><i class="fa-solid fa-plus"></i></button>
+          </div>
+
+          <div class="lang-badge"><i class="fa-solid fa-language"></i> RU / KZ / Шала-қазақша</div>
+          
+          <label style="font-size:11px;color:var(--obs-text-dim)">Режим дорожек:</label>
+          <select id="audioTrackSelect" onchange="onTrackModeChange()">
+            <option value="mix" selected>🎚️ Раздельно (Mic+Sys)</option>
+            <option value="system">🔊 Только Sys Loopback</option>
+            <option value="mic">🎙️ Только Mic</option>
+          </select>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Right Column Controls -->
+  <div class="obs-col obs-col-right">
+    <div class="obs-panel">
+      <div class="obs-panel-header">Управление <i class="fa-solid fa-window-restore"></i></div>
+      <div class="obs-panel-content controls-stack">
+        <button id="btnStartRec" onclick="toggleRecording()"><i class="fa-solid fa-play"></i> <span id="btnRecordText">Начать запись</span></button>
+        <button id="btnStopRec" onclick="toggleRecording()" disabled><i class="fa-solid fa-stop"></i> Остановить и обработать</button>
+        <button id="btnPauseRec" onclick="togglePauseRecording()" disabled><i class="fa-solid fa-pause"></i> Пауза</button>
+        
+        <div class="obs-separator"></div>
+        <button onclick="toggleProtocolPanel()"><i class="fa-solid fa-clipboard-list"></i> Открыть протокол</button>
+        <button onclick="triggerFileInput()"><i class="fa-solid fa-upload"></i> Загрузить аудио</button>
+        <button id="btnSelectWindow" onclick="selectScreenShare()"><i class="fa-solid fa-display"></i> Окно Zoom/Discord</button>
+        
+        <div class="obs-separator"></div>
+        <button onclick="exportDocx()"><i class="fa-solid fa-file-word" style="color:#2b579a"></i> Экспорт Word</button>
+        <button onclick="exportPdf()"><i class="fa-solid fa-file-pdf" style="color:#e3242b"></i> Экспорт PDF</button>
+        <button onclick="exportSedJson()"><i class="fa-solid fa-network-wired"></i> Экспорт в СЭД</button>
+        
+        <div class="obs-separator"></div>
+        <button onclick="openSettingsModal()"><i class="fa-solid fa-gear"></i> Настройки</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Status Bar -->
+<div class="obs-status-bar">
+  <div style="display:flex;gap:15px;align-items:center;">
+    <span id="liveStatusPill"><i class="fa-solid fa-circle" style="color:#10b981"></i> Готов</span>
+    <span style="color:var(--obs-text-dim)">|</span>
+    <span><i class="fa-solid fa-brain"></i> <span id="aiThoughtText">Система готова.</span></span>
+  </div>
+  <div>
+    <span><i class="fa-solid fa-shield-halved"></i> Контур: On-Premise Ready</span>
+  </div>
+</div>
+
+<!-- Hidden File Input -->
+<input type="file" id="audioFileInput" accept=".mp3,.wav,.m4a,.ogg" style="display:none" onchange="handleFileSelected(event)">
+
+<!-- PROTOCOL SLIDE-OUT PANEL -->
+<div class="protocol-overlay" id="protocolPanel">
+  <div class="protocol-header">
+    <div>
+      <div id="metaCompanyTag" class="badge badge-primary" style="margin-bottom:4px;display:inline-block">Организация</div>
+      <h2 id="currentMeetingTitle">Название совещания</h2>
+      <div style="font-size:12px;color:var(--obs-text-dim);margin-top:4px;">
+        <span id="metaDate">--</span> | 
+        <span id="metaLeader">--</span> | 
+        <span id="metaDuration">--</span>
+      </div>
+    </div>
+    <button class="protocol-close" onclick="toggleProtocolPanel()"><i class="fa-solid fa-xmark"></i></button>
+  </div>
+  
+  <div class="protocol-tabs">
+    <button class="active" onclick="switchTab('tasks')">Поручения (<span id="tabTasksCount">0</span>)</button>
+    <button onclick="switchTab('moments')">Ключевые моменты (<span id="tabMomentsCount">0</span>)</button>
+    <button onclick="switchTab('notes')">Заметки</button>
+    <button onclick="switchTab('summary')">Саммари</button>
+    <button onclick="switchTab('transcript')">Стенограмма</button>
+    <button onclick="switchTab('sed')">СЭД</button>
+  </div>
+  
+  <div class="protocol-content-area">
+    <!-- Tasks Tab -->
+    <div id="tabContentTasks" class="tab-pane active">
+      <div style="margin-bottom:15px;display:flex;gap:10px;">
+        <button class="btn-secondary" onclick="filterTasks('all')">Все (<span id="mTotalTasks">0</span>)</button>
+        <button class="btn-secondary" onclick="filterTasks('high')">Высокий (<span id="mHighTasks">0</span>)</button>
+        <button class="btn-secondary" onclick="filterTasks('in_progress')">В работе (<span id="mProgressTasks">0</span>)</button>
+        <button class="btn-secondary" onclick="filterTasks('done')">Готово (<span id="mDoneTasks">0</span>)</button>
+        <button class="btn-secondary" onclick="filterTasks('overdue')">Контроль (<span id="mOverdueTasks">0</span>)</button>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>№</th><th>Суть</th><th>Ответственный</th><th>Срок</th><th>Приоритет</th><th>Статус</th><th>Цитата</th>
+          </tr>
+        </thead>
+        <tbody id="tasksTableBody"></tbody>
+      </table>
+    </div>
+
+    <!-- Moments Tab -->
+    <div id="tabContentMoments" class="tab-pane">
+      <div id="momentsTimeline" style="display:flex;flex-direction:column;gap:10px;"></div>
+    </div>
+
+    <!-- Notes Tab -->
+    <div id="tabContentNotes" class="tab-pane">
+      <div style="display:flex;gap:20px;">
+        <div style="flex:1;">
+          <h3>Добавить заметку</h3>
+          <textarea id="newNoteText" rows="3" style="margin:10px 0;resize:vertical;"></textarea>
+          <div style="display:flex;gap:10px;">
+            <select id="newNoteCategory">
+              <option value="Срочно">Срочно</option>
+              <option value="Контроль" selected>Контроль</option>
+              <option value="Вопрос">Вопрос</option>
+              <option value="Заметка">Заметка</option>
+            </select>
+            <button class="btn-primary" onclick="addNewNote()">Добавить</button>
+          </div>
+          <h3 style="margin-top:20px;">Лента заметок</h3>
+          <div id="notesFeed" style="margin-top:10px;display:flex;flex-direction:column;gap:10px;"></div>
+        </div>
+        <div style="flex:1;">
+          <h3>Служебная памятка</h3>
+          <div id="memoBodyContent" style="background:var(--obs-bg-panel);padding:15px;border:1px solid var(--obs-border);margin-top:10px;"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Summary Tab -->
+    <div id="tabContentSummary" class="tab-pane">
+      <h2 style="text-align:center;">ПРОТОКОЛ СОВЕЩАНИЯ</h2>
+      <div id="sumDocDatePlace" style="text-align:center;margin-bottom:20px;color:var(--obs-text-dim)"></div>
+      <h4>ПОВЕСТКА:</h4>
+      <ul id="sumAgendaList" style="margin-left:20px;margin-bottom:15px;"></ul>
+      <h4>ПРИСУТСТВОВАЛИ:</h4>
+      <div id="sumParticipantsList" style="margin-bottom:15px;"></div>
+      <h4>КЛЮЧЕВЫЕ ТЕЗИСЫ И РЕШЕНИЯ:</h4>
+      <div id="sumTopicsContainer"></div>
+    </div>
+
+    <!-- Transcript Tab -->
+    <div id="tabContentTranscript" class="tab-pane">
+      <input type="text" id="transcriptSearch" placeholder="Поиск по стенограмме..." oninput="filterTranscript()" style="margin-bottom:15px;">
+      <div id="dialogueChat" style="display:flex;flex-direction:column;gap:15px;"></div>
+    </div>
+
+    <!-- SED Tab -->
+    <div id="tabContentSed" class="tab-pane">
+      <h3>Регистрационная карточка СЭД</h3>
+      <div id="sedCardFields" style="display:grid;grid-template-columns:1fr 2fr;gap:10px;margin:15px 0;"></div>
+      <h4>Контрольные поручения:</h4>
+      <div id="sedAssignmentsContainer" style="display:flex;flex-direction:column;gap:10px;margin-top:10px;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Modals -->
+<div class="modal-overlay" id="companyModal" style="display:none">
+  <div class="modal-box">
+    <div class="modal-header">Добавить компанию <button class="modal-close" onclick="closeCompanyModal()">&times;</button></div>
+    <div class="modal-body">
+      <input type="text" id="newCompanyName" placeholder="Название">
+      <select id="newCompanyType">
+        <option value="Дочерняя">Дочерняя</option>
+        <option value="Подрядчик">Подрядчик</option>
+      </select>
+      <input type="text" id="newCompanyCode" placeholder="Код СЭД">
+    </div>
+    <div class="modal-footer">
+      <button class="btn-secondary" onclick="closeCompanyModal()">Отмена</button>
+      <button class="btn-primary" onclick="submitNewCompany()">Сохранить</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="settingsModal" style="display:none">
+  <div class="modal-box">
+    <div class="modal-header">Настройки <button class="modal-close" onclick="closeSettingsModal()">&times;</button></div>
+    <div class="modal-body">
+      <input type="password" id="settingsApiKey" placeholder="API Key">
+      <textarea id="settingsPrompt" rows="3" placeholder="Глоссарий"></textarea>
+      <input type="text" id="settingsCompany" placeholder="Название организации / компании">
+    </div>
+    <div class="modal-footer">
+      <button class="btn-secondary" onclick="closeSettingsModal()">Отмена</button>
+      <button class="btn-primary" onclick="saveSettings()">Сохранить</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="quoteModal" style="display:none">
+  <div class="modal-box">
+    <div class="modal-header">Цитата <button class="modal-close" onclick="closeQuoteModal()">&times;</button></div>
+    <div class="modal-body">
+      <blockquote id="quoteModalText" style="border-left:3px solid var(--obs-highlight);padding-left:10px;margin:0;"></blockquote>
+      <div id="quoteModalAssignee" style="font-size:12px;color:var(--obs-text-dim);margin-top:10px;"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-primary" onclick="closeQuoteModal()">Закрыть</button>
+    </div>
+  </div>
+</div>
+
+<script src="main.js"></script>
+</body>
+</html>

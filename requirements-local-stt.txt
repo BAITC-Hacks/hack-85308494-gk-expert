@@ -1,0 +1,2 @@
+# Local inference; install packages and stage model weights before going offline.
+faster-whisper==1.2.1
