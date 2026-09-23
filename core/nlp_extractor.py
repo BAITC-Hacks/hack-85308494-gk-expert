@@ -1,353 +1,144 @@
+"""Conservative local extraction without network clients or cloud fallback."""
 import os
 import re
-import time
-import json
-from typing import Dict, List, Optional
-from openai import OpenAI
+from datetime import datetime
+from typing import Dict, Optional
 
 
 class NLPExtractor:
-    """
-    Intelligent NLP module for:
-    - Speaker Diarization (Who spoke when, role mapping)
-    - Action Items / Tasks extraction (Who, What, Deadline, Priority, Department)
-    - Key Moments & Critical Turning Points (Решения, Риски, Финансы, Срывы сроков)
-    - Smart Executive Memos (Памятки для руководства и кураторов)
-    - Company and Group attribution
-    - Multi-language support (RU, KZ, Shala-Kazakh)
-    - Cloud LLM (GPT-4o) + Local Astra + Offline Fallback
-    """
+    """Rule-based RU/KK draft protocol. Text labels are not acoustic diarization."""
 
-    SYSTEM_PROMPT = """Ты — ведущий профессиональный секретарь и бизнес-аналитик совещаний.
-Твоя задача — проанализировать стенограмму совещания и сформировать структурированный официальный протокол с фиксацией ВСЕХ поручений, КЛЮЧЕВЫХ МОМЕНТОВ и СЛУЖЕБНОЙ ПАМЯТКИ.
-Совещание может проходить на русском, казахском или смешанном («шала-казахском») языке в любой компании или отрасли.
+    SYSTEM_PROMPT = """Ты — секретарь совещания любой организации.
+Сохраняй факты и цитаты из стенограммы на русском, казахском или смешанном языке.
+Выделяй поручения, ответственных, сроки, решения и риски. Не выдумывай имена,
+даты или решения. Неизвестные поля отмечай как «Не указан»."""
 
-ТРЕБОВАНИЯ:
-1. ДИАРИЗАЦИЯ И УЧАСТНИКИ:
-   - Определи участников совещания, их ФИО и должности строго по контексту диалога (не выдумывай несуществующие данные).
-   - Сформируй связный диалог (реплики с таймкодами, ФИО спикера, ролью и текстом).
-
-2. ПОРУЧЕНИЯ (ACTION ITEMS):
-   - Зафиксируй КАЖДОЕ поручение руководства без пропусков.
-   - Укажи: id, task (четкий инфинитив: "Разработать...", "Подготовить..."), assignee (ФИО и должность, если названы), deadline, priority ("Высокий"/"Средний"/"Обычный"), department, status ("В работе"), source_quote (прямая цитата).
-
-3. КЛЮЧЕВЫЕ МОМЕНТЫ (KEY MOMENTS):
-   - Выдели поворотные события с таймкодами:
-     * "Решение": утвержденные управленческие решения;
-     * "Риск / Инцидент": аварии, проверки, сбои, правовые риски;
-     * "Финансы / Бюджет": освоение процентов, сметы, штрафные санкции, бюджет;
-     * "Срыв сроков": задержки поставок, неготовность документов;
-   - Для каждого укажи: timestamp ("01:15"), type, title, description, importance ("Критическая"/"Высокая"/"Средняя").
-
-4. ПАМЯТКА ДЛЯ РУКОВОДСТВА (EXECUTIVE MEMO):
-   - Сформируй краткую служебную записку:
-     * urgent_actions: что требует немедленного контроля в ближайшие 48 часов;
-     * key_metrics: важнейшие озвученные цифры (проценты, суммы, сроки);
-     * risks_alert: критические угрозы (остановка производства, срыв контрактов, кассовые разрывы).
-
-5. ОРГАНИЗАЦИЯ:
-   - Определи организацию из контекста диалога; если не названа явно, укажи "Организация".
-
-ВЕРНИ ОТВЕТ ТОЛЬКО В ФОРМАТЕ JSON следующего вида:
-{
-  "title": "Тема совещания",
-  "company_id": "main_org",
-  "company": "Название организации",
-  "group_id": "general",
-  "date": "Дата или период",
-  "leader": "ФИО председателя",
-  "agenda": ["Пункт 1", "Пункт 2"],
-  "participants": [
-    {"name": "ФИО", "role": "Должность", "department": "Департамент"}
-  ],
-  "summary": [
-    {
-      "topic": "Название блока / темы",
-      "key_points": ["тезис 1 с цифрами", "тезис 2"],
-      "risks": ["риск 1"],
-      "decisions": ["решение 1"]
-    }
-  ],
-  "key_moments": [
-    {
-      "id": 1,
-      "timestamp": "01:20",
-      "type": "Решение",
-      "title": "Краткий заголовок момента",
-      "description": "Что произошло или было решено",
-      "importance": "Высокая"
-    }
-  ],
-  "executive_memo": {
-    "target": "Для руководства правления АО «Самрук-Қазына Өңдеу»",
-    "urgent_actions": ["действие 1", "действие 2"],
-    "key_metrics": ["метрика 1", "метрика 2"],
-    "risks_alert": ["угроза 1"]
-  },
-  "dialogue": [
-    {
-      "speaker": "ФИО спикера",
-      "role": "Должность",
-      "timestamp": "00:15",
-      "text": "Текст реплики"
-    }
-  ],
-  "tasks": [
-    {
-      "id": 1,
-      "task": "Суть поручения",
-      "assignee": "ФИО ответственного",
-      "deadline": "Срок исполнения",
-      "priority": "Высокий",
-      "department": "Департамент",
-      "status": "В работе",
-      "source_quote": "Цитата из стенограммы"
-    }
-  ]
-}
-"""
+    NAME = r"[А-ЯЁӘІҢҒҮҰҚӨҺA-Z][а-яёәіңғүұқөһa-z]+(?:[- ][А-ЯЁӘІҢҒҮҰҚӨҺA-Z][а-яёәіңғүұқөһa-z]+){0,2}"
+    ACTION = re.compile(
+        r"\b(?:поручаю|поручено|прошу|необходимо|нужно|обязую|назначить|"
+        r"подготов(?:ить|ьте|лю|им)|разработ(?:ать|айте|аю|аем)|обеспеч(?:ить|ьте|у|им)|"
+        r"долож(?:ить|ите|у|им)|предостав(?:ить|ьте|лю|им)|провер(?:ить|ьте|ю|им)|"
+        r"отправ(?:ить|ьте|лю|им)|соглас(?:овать|уйте|ую|уем)|ответственн\w*|"
+        r"дайында\w*|әзірле\w*|тапсыр\w*|жібер\w*|ұсын\w*|тексер\w*|"
+        r"жауапты|орындау|қамтамасыз\s+ет\w*)\b", re.I
+    )
+    DEADLINE = re.compile(
+        r"\b(?:до|к|не\s+позднее|в\s+срок\s+до)\s+"
+        r"(?:\d{1,2}[./]\d{1,2}(?:[./]\d{2,4})?|\d{1,2}\s+[а-яё]+(?:\s+\d{4})?|"
+        r"конца\s+(?:дня|недели|месяца|квартала)|понедельник[ау]?|вторник[ау]?|"
+        r"сред[уы]|четверг[ау]?|пятниц[ыа]|суббот[ыа]|воскресень[яе])|"
+        r"\b(?:сегодня|завтра|послезавтра|через\s+\d+\s+(?:дн\w*|недел\w*|час\w*))\b|"
+        r"\b(?:\d{1,2}\s+)?(?:қаңтар|ақпан|наурыз|сәуір|мамыр|маусым|шілде|тамыз|"
+        r"қыркүйек|қазан|қараша|желтоқсан)\w*\s+дейін|"
+        r"\b(?:бүгін\w*|ертең\w*|бүрсігүні|дүйсенбі\w*|сейсенбі\w*|сәрсенбі\w*|"
+        r"бейсенбі\w*|жұма\w*|сенбі\w*|жексенбі\w*|апта\s+соңына)(?:\s+дейін)?", re.I
+    )
+    RISK = re.compile(r"\b(?:риск\w*|инцидент\w*|срыв\w*|задержк\w*|штраф\w*|авари\w*|тәуекел\w*|қауіп\w*|кешіг\w*)", re.I)
+    DECISION = re.compile(r"\b(?:решили|договорились|утверждаю|принято\s+решение|шешім\s+қабылда\w*|келістік|бекітіл\w*)", re.I)
+    URGENT = re.compile(r"\b(?:срочно|немедленно|критич\w*|шұғыл|дереу|жедел)", re.I)
 
     def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
-        if self.api_key:
-            self.client = OpenAI(api_key=self.api_key)
-        else:
-            self.client = None
+        # Retained for compatibility with older settings; deliberately unused.
+        pass
 
     def set_api_key(self, api_key: str):
-        self.api_key = api_key
-        self.client = OpenAI(api_key=api_key)
+        pass
 
-    def process_transcript(self, transcript_data: Dict, model: str = "gpt-4o") -> Dict:
-        """
-        Process speech transcript data into a complete structured meeting protocol
-        including Key Moments, Action Items, and Executive Memo.
-        """
-        text = transcript_data.get("text", "")
-        segments = transcript_data.get("segments", [])
-
-        # Format transcript with timestamps
-        formatted_segments = []
-        for s in segments:
-            start_m = int(s.get("start", 0) // 60)
-            start_s = int(s.get("start", 0) % 60)
-            formatted_segments.append(f"[{start_m:02d}:{start_s:02d}] {s.get('text', '')}")
-        segmented_text = "\n".join(formatted_segments) if formatted_segments else text
-
-        # 1. Offline Mode: strictly local rule-based engine without any network requests
-        if model == "offline":
-            print("[NLP] Running in completely Offline (On-Premise) mode...")
-            res = self._offline_fallback_extractor(transcript_data)
-            res["processed_with"] = "Offline Rule Engine (Air-Gapped)"
-            return res
-
-        # 2. Codex Astra Mode: try local Codex CLI first
-        if model == "codex-astra":
-            print("[NLP] Running via Codex Astra local agent...")
-            codex_res = self._extract_via_codex_cli(segmented_text)
-            if codex_res:
-                codex_res["audio_filename"] = transcript_data.get("filename", "")
-                codex_res["audio_duration"] = transcript_data.get("duration", 0)
-                codex_res["processed_with"] = "Codex Astra (Local Agent)"
-                return codex_res
-            print("[NLP] Codex Astra CLI call fallback to offline parser...")
-            res = self._offline_fallback_extractor(transcript_data)
-            res["processed_with"] = "Offline Rule Engine (Astra Fallback)"
-            return res
-
-        # 3. Cloud LLM Mode (GPT-4o)
-        if self.client:
-            try:
-                print(f"[NLP] Extracting tasks, key moments and memos via {model}...")
-                response = self.client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": self.SYSTEM_PROMPT},
-                        {
-                            "role": "user",
-                            "content": f"Стенограмма совещания с таймкодами:\n\n{segmented_text}"
-                        }
-                    ],
-                    response_format={"type": "json_object"},
-                    temperature=0.2
-                )
-                raw_json = response.choices[0].message.content
-                result = json.loads(raw_json)
-
-                # Ensure required fields exist
-                default_comp = os.getenv("DEFAULT_COMPANY", "Организация")
-                result.setdefault("company", default_comp)
-                result.setdefault("company_id", "main_org")
-                result.setdefault("title", "Оперативное совещание")
-                result.setdefault("tasks", [])
-                result.setdefault("key_moments", [])
-                result.setdefault("summary", [])
-                result.setdefault("participants", [])
-                result.setdefault("dialogue", [])
-                result.setdefault("executive_memo", {
-                    "target": f"Руководство {default_comp}",
-                    "urgent_actions": ["Контроль исполнения зафиксированных поручений"],
-                    "key_metrics": ["Соблюдение сроков"],
-                    "risks_alert": ["Риск срыва операционного плана"]
-                })
-
-                result["audio_filename"] = transcript_data.get("filename", "")
-                result["audio_duration"] = transcript_data.get("duration", 0)
-                result["processed_with"] = model
-
-                return result
-            except Exception as e:
-                print(f"[NLP] Error in LLM extraction ({e}), falling back to offline parser...")
-
-        return self._offline_fallback_extractor(transcript_data)
-
-    def _extract_via_codex_cli(self, segmented_text: str) -> Optional[Dict]:
-        """Runs local Codex CLI to extract protocol JSON without cloud API."""
-        import subprocess
-        codex_path = r"C:\Users\New\AppData\Local\Programs\OpenAI\Codex\bin\codex.exe"
-        if not os.path.exists(codex_path):
-            return None
-        prompt = (
-            f"{self.SYSTEM_PROMPT}\n\n"
-            f"Стенограмма:\n{segmented_text[:4000]}\n\n"
-            f"Ответь ТОЛЬКО валидным JSON-объектом."
+    @classmethod
+    def _assignee(cls, text, speaker):
+        patterns = (
+            rf"(?i:ответственн(?:ый|ая|ые)|жауапты)\s*[:—–-]?\s*({cls.NAME})",
+            rf"(?i:поручаю|прошу|поручить)\s+({cls.NAME})",
+            rf"^({cls.NAME}),\s*",
+            rf"^({cls.NAME})\s+(?i:жауапты)\b",
         )
-        try:
-            cmd = [codex_path, "exec", "--skip-git-repo-check", "--ephemeral", prompt]
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=40, stdin=subprocess.DEVNULL)
-            if proc.returncode == 0 and proc.stdout:
-                # Find JSON block in output
-                match = re.search(r"\{.*\}", proc.stdout, re.DOTALL)
-                if match:
-                    return json.loads(match.group(0))
-        except Exception as e:
-            print(f"[NLP] Codex CLI error: {e}")
-        return None
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if match:
+                return match.group(1)
+        if speaker != "Говорящий не определён" and re.search(r"\b(?:я\s+(?:подготовлю|сделаю|отправлю)|мен\s+.*(?:дайындаймын|жіберемін))", text, re.I):
+            return speaker
+        return "Не указан"
 
-    def _offline_fallback_extractor(self, transcript_data: Dict) -> Dict:
-        """Deterministic offline extractor for air-gapped / local mode without internet."""
-        text = transcript_data.get("text", "")
-        segments = transcript_data.get("segments", [])
+    def process_transcript(self, transcript_data: Dict, model: str = "offline") -> Dict:
+        # Even stale UI requests for gpt-4o/codex-astra stay on this computer.
+        text = str(transcript_data.get("text") or "").strip()
+        segments = transcript_data.get("segments") or ([{"text": text, "start": 0}] if text else [])
+        dialogue, tasks, moments, names, sentences = [], [], [], [], []
+        pending, pending_stamp, pending_speaker = "", "00:00", "Говорящий не определён"
 
-        tasks = []
-        key_moments = []
-        dialogue = []
-        task_id = 1
-        moment_id = 1
-
-        assignee_pattern = re.compile(
-            r"(?:поручаю|ответственн(?:ый|ая)|назначить|прошу)\s+([А-ЯЁІҢҒҮҰҚӨҺ][а-яёіңғүұқөһ]+(?:\s+[А-ЯЁІҢҒҮҰҚӨҺ]\.?)?)",
-            re.IGNORECASE
-        )
-        deadline_pattern = re.compile(
-            r"(?:до|к|в срок до)\s+(\d{1,2}(?:\s+[а-яёіңғүұқөһ]+|\.\d{2}(?:\.\d{2,4})?)|конца\s+(?:недели|месяца|квартала)|понедельника|пятницы)",
-            re.IGNORECASE
-        )
-
-        known_speakers = set()
-
-        for s in segments:
-            t = s.get("text", "").strip()
-            start_m = int(s.get("start", 0) // 60)
-            start_s = int(s.get("start", 0) % 60)
-            time_str = f"{start_m:02d}:{start_s:02d}"
-
-            # Detect speaker if labeled or contextual
-            speaker_match = re.match(r"^([А-ЯЁІҢҒҮҰҚӨҺ][а-яёіңғүұқөһ]+(?:\s+[А-ЯЁІҢҒҮҰҚӨҺ]\.?)?):\s*(.*)", t)
-            if speaker_match:
-                spk = speaker_match.group(1)
-                text_clean = speaker_match.group(2)
-                known_speakers.add(spk)
-            else:
-                spk = "Участник совещания"
-                text_clean = t
-
-            dialogue.append({
-                "speaker": spk,
-                "role": "Спикер",
-                "timestamp": time_str,
-                "text": text_clean
-            })
-
-            # Detect key moments
-            if any(k in t.lower() for k in ["проблема", "риск", "инцидент", "срыв", "задержк", "штраф", "авари"]):
-                key_moments.append({
-                    "id": moment_id,
-                    "timestamp": time_str,
-                    "type": "Риск / Инцидент",
-                    "title": text_clean[:60] + ("..." if len(text_clean) > 60 else ""),
-                    "description": text_clean,
-                    "importance": "Высокая"
-                })
-                moment_id += 1
-            elif any(k in t.lower() for k in ["решили", "договорились", "зафиксируем", "утверждаю", "принято решение"]):
-                key_moments.append({
-                    "id": moment_id,
-                    "timestamp": time_str,
-                    "type": "Решение",
-                    "title": text_clean[:60] + ("..." if len(text_clean) > 60 else ""),
-                    "description": text_clean,
-                    "importance": "Высокая"
-                })
-                moment_id += 1
-
-            # Detect tasks with smart regex
-            if any(k in t.lower() for k in ["поручение", "срок", "ответственный", "подготовить", "разработать", "обеспечить", "доложить", "смета", "предоставить"]):
-                # Extract assignee
-                asm = assignee_pattern.search(t)
-                assignee = asm.group(1) if asm else "Ответственный исполнитель"
-
-                # Extract deadline
-                dlm = deadline_pattern.search(t)
-                deadline = dlm.group(1) if dlm else "По графику"
-
-                priority = "Высокий" if any(w in t.lower() for w in ["срочно", "немедленно", "критичн", "строго"]) else "Средний"
-
+        def consume(sentence, stamp, speaker):
+            sentence = sentence.strip()
+            if not sentence:
+                return
+            sentences.append(sentence)
+            kind = "Риск / Инцидент" if self.RISK.search(sentence) else "Решение" if self.DECISION.search(sentence) else None
+            if kind:
+                moments.append({"id": len(moments) + 1, "timestamp": stamp, "type": kind,
+                                "title": sentence[:90], "description": sentence, "importance": "Высокая"})
+            if self.ACTION.search(sentence):
+                deadline = self.DEADLINE.search(sentence)
+                assignee = self._assignee(sentence, speaker)
                 tasks.append({
-                    "id": task_id,
-                    "task": text_clean,
-                    "assignee": assignee,
-                    "deadline": deadline,
-                    "priority": priority,
-                    "department": "Профильное подразделение",
-                    "status": "В работе",
-                    "source_quote": t
+                    "id": len(tasks) + 1, "task": sentence, "assignee": assignee,
+                    "deadline": deadline.group(0) if deadline else "Не указан",
+                    "priority": "Высокий" if self.URGENT.search(sentence) else "Обычный",
+                    "department": "Не указано", "status": "В работе", "source_quote": sentence,
+                    "timestamp": stamp, "needs_review": True,
                 })
-                task_id += 1
 
-        participants = [{"name": spk, "role": "Участник совещания", "department": "Организация"} for spk in known_speakers]
-        if not participants:
-            participants = [{"name": "Участники совещания", "role": "Руководители направлений", "department": "Организация"}]
+        for segment in segments:
+            segment_text = str(segment.get("text") or "").strip()
+            if not segment_text:
+                continue
+            start = max(0, float(segment.get("start") or 0))
+            stamp = f"{int(start // 60):02d}:{int(start % 60):02d}"
+            label = re.match(rf"^({self.NAME}):\s*(.+)", segment_text)
+            speaker = str(segment.get("speaker") or (label.group(1) if label else "Говорящий не определён"))
+            clean = label.group(2) if label else segment_text
+            if speaker != "Говорящий не определён" and speaker not in names:
+                names.append(speaker)
+            dialogue.append({"speaker": speaker, "role": "", "timestamp": stamp, "text": clean})
+            if pending and speaker != pending_speaker:
+                consume(pending, pending_stamp, pending_speaker)
+                pending = ""
+            if not pending:
+                pending_stamp, pending_speaker = stamp, speaker
+            pending = (pending + " " + clean).strip()
+            # Preserve dates such as 25.09.2026.
+            pieces = re.split(r"(?<=[.!?;])\s+", pending)
+            for sentence in pieces[:-1]:
+                consume(sentence, pending_stamp, pending_speaker)
+            pending = pieces[-1]
+            if re.search(r"[.!?;]$", pending):
+                consume(pending, pending_stamp, pending_speaker)
+                pending = ""
+        consume(pending, pending_stamp, pending_speaker)
 
-        comp_name = os.getenv("DEFAULT_COMPANY", "Организация")
-        cur_date = time.strftime("%d.%m.%Y")
-
+        risks = [m["description"] for m in moments if m["type"] == "Риск / Инцидент"]
+        decisions = [m["description"] for m in moments if m["type"] == "Решение"]
+        # Extractive summary: actual utterances, never an invented conclusion.
+        ranked = sorted(enumerate(sentences), key=lambda pair: (
+            -int(bool(self.DECISION.search(pair[1]) or self.RISK.search(pair[1]) or self.ACTION.search(pair[1]))), pair[0]))
+        selected = sorted(ranked[:6])
+        company = os.getenv("DEFAULT_COMPANY", "Организация").strip() or "Организация"
+        warnings = ["Черновик: проверьте распознавание, поручения, ответственных и сроки."]
+        if transcript_data.get("diarization") != "performed":
+            warnings.append("Автоматическая диаризация голосов не выполнена; имена берутся только из явных меток стенограммы.")
+        if not text and not dialogue:
+            warnings.append("Речь не обнаружена. Проверьте звук и выбранный источник записи.")
         return {
-            "title": "Протокол совещания",
-            "company": comp_name,
-            "company_id": "main_org",
-            "date": cur_date,
-            "leader": participants[0]["name"] if participants else "Председатель совещания",
-            "agenda": ["Обсуждение ключевых производственных и операционных вопросов"],
-            "participants": participants,
-            "summary": [
-                {
-                    "topic": "Итоги совещания",
-                    "key_points": ["Зафиксированы доклады участников."],
-                    "risks": ["Необходим оперативный контроль поручений."],
-                    "decisions": ["Поручения приняты к исполнению."]
-                }
-            ],
-            "key_moments": key_moments,
-            "executive_memo": {
-                "target": f"Для руководства {comp_name}",
-                "urgent_actions": ["Контроль исполнения первоочередных поручений по графикам"],
-                "key_metrics": [f"Зафиксировано {len(tasks)} поручений"],
-                "risks_alert": ["Контроль соблюдения согласованных сроков"]
-            },
-            "dialogue": dialogue,
-            "tasks": tasks,
-            "audio_filename": transcript_data.get("filename", ""),
-            "audio_duration": transcript_data.get("duration", 0),
-            "processed_with": "Offline Rule-based Engine"
+            "title": "Протокол совещания", "company": company, "company_id": "main_org", "group_id": "general",
+            "date": datetime.now().strftime("%d.%m.%Y"), "leader": "Не указан", "agenda": [],
+            "participants": [{"name": name, "role": "Не указана", "department": ""} for name in names],
+            "summary": [{"topic": "Ключевые фрагменты совещания", "key_points": [s for _, s in selected],
+                         "risks": risks, "decisions": decisions}],
+            "key_moments": moments,
+            "executive_memo": {"target": f"Для руководства: {company}",
+                               "urgent_actions": [t["task"] for t in tasks if t["priority"] == "Высокий"],
+                               "key_metrics": [f"Найдено кандидатов в поручения: {len(tasks)}"], "risks_alert": risks},
+            "dialogue": dialogue, "tasks": tasks, "transcript": text or " ".join(d["text"] for d in dialogue),
+            "audio_filename": transcript_data.get("filename", ""), "audio_duration": transcript_data.get("duration", 0),
+            "processed_with": "Локальные правила RU/KK", "processing_location": "local", "warnings": warnings,
+            "diarization": transcript_data.get("diarization", "not_performed"),
         }

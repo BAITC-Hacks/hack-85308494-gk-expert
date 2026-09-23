@@ -1,14 +1,30 @@
+# Environment & Secrets
 .env
-.env.*
-!.env.example
-.venv/
+.env.local
+
+# Python cache
 __pycache__/
 *.py[cod]
+*$py.class
+*.so
 .pytest_cache/
-build/
-dist/
-*.spec
-models/
-sound/
-storage/
-*.log
+
+# User storage & temporary files
+storage/recordings/*.wav
+storage/recordings/*.mp3
+storage/test_recordings/
+tests/transcript_*.json
+tests/meeting1_structured.json
+
+# Keep folders
+!storage/meetings/*.json
+!storage/protocols/.gitkeep
+!storage/sed_exports/.gitkeep
+!sound/
+
+# OS specific
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store

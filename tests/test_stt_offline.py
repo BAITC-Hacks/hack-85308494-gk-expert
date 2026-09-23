@@ -85,6 +85,13 @@ class TestOfflineSTT(unittest.TestCase):
         self.factory.assert_not_called()
         self.network.assert_not_called()
 
+    def test_default_missing_model_with_legacy_key_never_uses_cloud(self):
+        with patch.dict(os.environ, {"STT_MODEL_DIR": str(self.root / "missing")}, clear=False):
+            engine = SpeechToTextEngine(api_key="your_openai_placeholder")
+            with self.assertRaisesRegex(RuntimeError, "STT_MODEL_DIR"):
+                engine.transcribe(str(self.audio))
+        self.network.assert_not_called()
+
     def test_missing_tokenizer_cannot_trigger_download(self):
         (self.model_dir / "tokenizer.json").unlink()
         with self.assertRaisesRegex(RuntimeError, "tokenizer.json"):
