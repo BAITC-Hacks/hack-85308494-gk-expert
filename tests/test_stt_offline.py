@@ -40,6 +40,7 @@ class TestOfflineSTT(unittest.TestCase):
             "OPENAI_API_KEY": "unused-test-value",
             "STT_DEVICE": "cpu", "STT_COMPUTE_TYPE": "int8",
         }).start()
+        patch('core.stt_engine.os.cpu_count', return_value=8).start()
         self.network = patch.object(socket.socket, "connect", side_effect=AssertionError("Network forbidden")).start()
 
     def engine(self):
@@ -48,7 +49,7 @@ class TestOfflineSTT(unittest.TestCase):
     def test_local_only_loading_and_existing_output_contract(self):
         result = self.engine().transcribe(str(self.audio))
         self.factory.assert_called_once_with(
-            str(self.model_dir.resolve()), device="cpu", compute_type="int8", local_files_only=True, cpu_threads=2
+            str(self.model_dir.resolve()), device="cpu", compute_type="int8", local_files_only=True, cpu_threads=4
         )
         self.assertEqual(result["text"], "Сәлем. Обсудим задачу.")
         self.assertEqual(result["duration"], 3.14)
@@ -58,6 +59,16 @@ class TestOfflineSTT(unittest.TestCase):
         self.assertEqual(result["filename"], "sample.wav")
         self.assertEqual(result["diarization"], "not_performed")
         self.network.assert_not_called()
+
+    def test_whole_file_callback_preserves_word_times_and_beam_quality(self):
+        import numpy as np
+        samples = np.zeros(16000, dtype=np.float32)
+        received = []
+        result = self.engine().transcribe(str(self.audio), samples=samples, on_segment=received.append)
+        self.assertIs(self.model.transcribe.call_args.args[0], samples)
+        self.assertEqual(self.model.transcribe.call_args.kwargs['beam_size'], 5)
+        self.assertEqual(received, result['segments'])
+        self.assertEqual(received[0]['words'][0]['start'], .5)
 
     def test_auto_and_mixed_detect_language_per_segment(self):
         engine = self.engine()

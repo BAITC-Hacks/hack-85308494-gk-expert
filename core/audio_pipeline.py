@@ -31,6 +31,8 @@ class MediaStore:
         self.root.mkdir(parents=True, exist_ok=True)
         self._paths = {}
         self._fragments = {}
+        self._session_jobs = {}
+        self._completed_jobs = {}
         self._lock = threading.Lock()
 
     def register(self, path):
@@ -51,11 +53,18 @@ class MediaStore:
         write_wav(path, samples)
         return path, self.register(path)
 
-    def publish_fragment(self, url, start, end, segments=None, source='Фрагмент', diarization='not_performed'):
+    def publish_fragment(self, url, start, end, segments=None, source='Фрагмент', diarization='not_performed',
+                         job_id=None, session_id=None):
         token = url.removeprefix('/media/')
         with self._lock:
             if token not in self._paths:
                 raise ValueError('Неизвестный аудиофрагмент')
+            previous = self._fragments.get(token, {})
+            job_id = job_id or previous.get('full_job_id')
+            session_id = session_id or previous.get('session_id')
+            final = self._completed_jobs.get(job_id or self._session_jobs.get(session_id))
+            if final:
+                segments, diarization = final['segments'], final['diarization']
             selected = []
             for segment in segments or []:
                 if segment.get('end', segment.get('start', 0)) <= start or segment.get('start', 0) >= end:
@@ -78,11 +87,31 @@ class MediaStore:
             self._fragments[token] = {'segments': selected, 'duration': round(end - start, 3),
                 'audio_url': url, 'source_start': start, 'source_end': end, 'source_label': source,
                 'fragment_ready': segments is not None, 'diarization': diarization,
-                'fragment_version': self._fragments.get(token, {}).get('fragment_version', 0) + 1}
+                'full_job_id': job_id or previous.get('full_job_id'),
+                'session_id': session_id or previous.get('session_id'),
+                'fragment_version': previous.get('fragment_version', 0) + 1}
+
+    def bind_session(self, session_id, job_id):
+        with self._lock:
+            self._session_jobs[session_id] = job_id
+
+    def complete_job(self, job_id, transcript):
+        if not job_id:
+            return
+        with self._lock:
+            self._completed_jobs[job_id] = {'segments': deepcopy(transcript['segments']),
+                                            'diarization': transcript.get('diarization', 'not_performed')}
+            fragments = [(token, deepcopy(data)) for token, data in self._fragments.items()
+                         if (data.get('full_job_id') or self._session_jobs.get(data.get('session_id'))) == job_id]
+        for token, data in fragments:
+            self.publish_fragment('/media/' + token, data['source_start'], data['source_end'], source=data['source_label'])
 
     def fragment(self, token):
         with self._lock:
-            return deepcopy(self._fragments.get(token))
+            result = deepcopy(self._fragments.get(token))
+            if result and result.get('session_id') in self._session_jobs:
+                result['full_job_id'] = self._session_jobs[result['session_id']]
+            return result
 
 
 def shifted_segments(result, offset, existing):
@@ -100,7 +129,7 @@ def shifted_segments(result, offset, existing):
 
 
 class WindowTranscriber:
-    """Process each advertised interval exactly once, including the short tail."""
+    """One full-file decoder pass; short windows are only playback previews."""
     def __init__(self, engine, media, seconds=20, speakers=None):
         self.engine, self.media, self.seconds = engine, media, seconds
         self.speakers = speakers
@@ -117,26 +146,37 @@ class WindowTranscriber:
         executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='speaker-diarization') if self.speakers else None
         voices = executor.submit(self.speakers.turns, samples, settings.get('speaker_count', 0), progress) if executor else None
         segments = []
-        fragments = []
-        detected_language = 'auto'
+        fragments = {}
         size = int(self.seconds * RATE)
-        for index in range(0, len(samples), size):
-            end = min(index + size, len(samples))
-            path, url = self.media.save(samples[index:end])
-            current = {'start': round(index / RATE, 2), 'end': round(end / RATE, 2), 'audio_url': url}
-            fragments.append(current)
-            self.media.publish_fragment(url, current['start'], current['end'], source=settings.get('source_label', Path(filepath).name))
-            progress(stage='Распознавание фрагмента', current_chunk=current)
-            context = settings.get('prompt') or self.engine.DEFAULT_PROMPT
-            if settings.get('participants'):
-                context += ' Участники: ' + ', '.join(roster_names(settings['participants'])) + '.'
-            if segments:
-                context += ' ' + ' '.join(s['text'] for s in segments)[-250:]
-            result = self.engine.transcribe(str(path), custom_prompt=context, language=settings.get('language', 'auto'))
-            segments.extend(shifted_segments(result, index / RATE, len(segments)))
-            self.media.publish_fragment(url, current['start'], current['end'], segments, source=settings.get('source_label', Path(filepath).name))
-            detected_language = result.get('language', detected_language)
-            progress(completed_seconds=end / RATE, segments=segments, stage='Фрагмент распознан')
+        source = settings.get('source_label', Path(filepath).name)
+        def preview(position):
+            index = min(len(samples) - 1, max(0, int(position * RATE))) // size * size
+            if index not in fragments:
+                end = min(index + size, len(samples))
+                _, url = self.media.save(samples[index:end])
+                fragments[index] = {'start': index / RATE, 'end': end / RATE, 'audio_url': url}
+                self.media.publish_fragment(url, index / RATE, end / RATE, source=source,
+                                            job_id=settings.get('job_id'))
+            return fragments[index]
+        progress(stage='Распознавание всего файла', current_chunk=preview(0))
+        def received(segment):
+            segments.append(deepcopy(segment))
+            current = preview(segment['start'])
+            self.media.publish_fragment(current['audio_url'], current['start'], current['end'], segments,
+                                        source=source, job_id=settings.get('job_id'))
+            progress(completed_seconds=min(duration, segment['end']), segments=segments,
+                     current_chunk=current, stage='Распознавание всего файла')
+        context = settings.get('prompt') or self.engine.DEFAULT_PROMPT
+        if settings.get('participants'):
+            context += ' Участники: ' + ', '.join(roster_names(settings['participants'])) + '.'
+        try:
+            result = self.engine.transcribe(str(full_path), samples=samples, on_segment=received,
+                                           custom_prompt=context, language=settings.get('language', 'auto'))
+            segments = result['segments']
+        except Exception:
+            if executor:
+                executor.shutdown(wait=False, cancel_futures=True)
+            raise
         speaker_data = {'diarization': 'not_performed', 'speakers': []}
         if voices:
             progress(stage='Сопоставление голосов, имён и реплик')
@@ -150,11 +190,11 @@ class WindowTranscriber:
             finally:
                 executor.shutdown(wait=True)
         progress(segments=segments, speakers=speaker_data['speakers'], completed_seconds=duration)
-        for fragment in fragments:
+        for fragment in fragments.values():
             self.media.publish_fragment(fragment['audio_url'], fragment['start'], fragment['end'], segments,
                 source=settings.get('source_label', Path(filepath).name), diarization=speaker_data['diarization'])
         return {'text': ' '.join(s['text'] for s in segments), 'segments': segments,
-                'duration': duration, 'language': detected_language, 'filename': Path(filepath).name,
+                'duration': duration, 'language': result.get('language', 'auto'), 'filename': Path(filepath).name,
                 'processing_location': 'local', 'engine': 'faster-whisper-local', **speaker_data,
                 'playback_file': full_path.name, 'audio_url': full_url}
 
@@ -175,7 +215,7 @@ class ProcessingJobs:
                'created_at': now_iso(), 'completed_seconds': 0, 'total_seconds': 0, 'segments': [], 'current_chunk': None}
         with self._lock:
             self._jobs[identifier] = job
-        self._queue.put((identifier, filepath, dict(deepcopy(settings), source_label=job['name']), tracks))
+        self._queue.put((identifier, filepath, dict(deepcopy(settings), source_label=job['name'], job_id=identifier), tracks))
         return self.get(identifier)
 
     def get(self, identifier):
@@ -248,7 +288,7 @@ class LiveTranscriber:
                 samples = self.recorder.read_live_window(cursor, end)
                 path, url = self.media.save(samples, 'live')
                 fragments.append({'audio_url': url, 'start': cursor, 'end': end})
-                self.media.publish_fragment(url, cursor, end, source='Live-запись')
+                self.media.publish_fragment(url, cursor, end, source='Live-запись', session_id=self._state['session_id'])
                 self._update(state='transcribing', stage='Распознавание live-фрагмента',
                              current_chunk={'start': cursor, 'end': end, 'audio_url': url})
                 context = self.settings.get('prompt') or getattr(self.engine, 'DEFAULT_PROMPT', None)

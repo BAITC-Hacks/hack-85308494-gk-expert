@@ -105,13 +105,28 @@ def run_gui_check(window, bridge):
         assert window.evaluate_js("document.getElementById('btnStopRec').disabled")
         assert window.evaluate_js("currentMeetingData === null && !document.getElementById('protocolPanel').classList.contains('open') && document.getElementById('historyList').hidden")
         report['empty_startup'] = True
+        assert window.evaluate_js("!sourceState.mic.enabled && sourceState.sys.enabled && document.getElementById('audioTrackSelect').value === 'system'")
+        assert bridge.recorder._muted['mic']
+        assert window.evaluate_js("document.querySelector('#micMuteButton .fa-microphone-slash') !== null && document.getElementById('micMuteButton').getAttribute('aria-pressed') === 'true'")
         window.evaluate_js("lockSource('mic')")
         assert window.evaluate_js("document.getElementById('micDeviceSelect').disabled")
-        window.evaluate_js("lockSource('mic'); toggleSource('mic')")
+        window.evaluate_js("lockSource('mic'); document.getElementById('micMuteButton').click()")
+        wait_js(window, "sourceState.mic.enabled && !sourceState.mic.pending")
+        assert not bridge.recorder._muted['mic']
+        window.evaluate_js("document.getElementById('micMuteButton').click()")
         wait_js(window, "!sourceState.mic.enabled")
         assert bridge.recorder._muted['mic']
-        window.evaluate_js("toggleSource('mic')")
-        wait_js(window, "sourceState.mic.enabled")
+        wait_js(window, "!sourceState.mic.pending")
+        assert window.evaluate_js("document.getElementById('micMuteButton').innerText.includes('Выключен')")
+        window.evaluate_js("document.getElementById('micMuteButton').click()")
+        wait_js(window, "sourceState.mic.enabled && !sourceState.mic.pending")
+        window.evaluate_js("window.originalCapture = navigator.mediaDevices.getDisplayMedia; navigator.mediaDevices.getDisplayMedia = async () => document.createElement('canvas').captureStream(1); selectScreenShare()")
+        wait_js(window, "screenStream !== null && !sourceState.mic.enabled && !recordTransition")
+        assert bridge.recorder._muted['mic'] and not bridge.recorder._muted['sys']
+        window.evaluate_js("selectScreenShare(); navigator.mediaDevices.getDisplayMedia = window.originalCapture")
+        assert window.evaluate_js("!sourceState.mic.enabled && document.getElementById('audioTrackSelect').value === 'system'")
+        report['screen_capture_mutes_microphone'] = True
+        report['mixer_mute_feedback'] = True
         report['source_buttons'] = True
         # Render a synthetic meeting, including characters that must stay text.
         meeting = bridge.nlp.process_transcript({"text": "Әлия, подготовьте отчёт завтра. Бюджет < 5 & план > 2."})
@@ -181,8 +196,16 @@ def run_gui_check(window, bridge):
             txt = Path(bridge.export_transcript({'meeting_id': newer['id']})['filepath']).read_text(encoding='utf-8-sig')
             assert 'Әлия' in txt
             report['speaker_name_correction'] = True
+            window.evaluate_js("document.querySelectorAll('.speaker-edit-button')[1].click()")
+            assert window.evaluate_js("document.activeElement === document.querySelector('.speaker-name-editor input')")
+            window.evaluate_js("let f = document.querySelector('.speaker-name-editor'); f.querySelector('input').value = 'Айгүл'; f.requestSubmit()")
+            wait_js(window, "currentMeetingData?.speakers?.[1]?.name === 'Айгүл'")
+            saved = bridge.manager.get_meeting(newer['id'])
+            assert saved['tasks'][0]['assignee'] == 'Айгүл'
+            assert window.evaluate_js("document.getElementById('dialogueChat').innerText.includes('Айгүл')")
+            report['inline_speaker_pencil'] = True
             _, fragment_url = bridge.media.save(np.zeros(16000 * 8, dtype=np.float32), 'ui_fragment')
-            bridge.media.publish_fragment(fragment_url, 8, 16, source='Live-запись')
+            bridge.media.publish_fragment(fragment_url, 8, 16, source='Live-запись', job_id='ui_job_pending')
             chunk = {'start': 8, 'end': 16, 'audio_url': fragment_url}
             window.evaluate_js('lastLive.current_chunk = ' + json.dumps(chunk) + "; listenCurrentChunk('live')")
             wait_js(window, "currentMeetingData?.is_fragment === true && currentMeetingData.audio_duration === 8")
@@ -196,6 +219,22 @@ def run_gui_check(window, bridge):
             assert 'Только короткий фрагмент.' in exported and 'новый отчёт' not in exported
             report['live_fragment_exact_audio_and_text'] = True
             report['fragment_export'] = True
+            assert window.evaluate_js("currentMeetingData.tasks.length === 0 && currentMeetingData.key_moments.length === 0")
+            window.evaluate_js("document.getElementById('fullProtocolButton').click()")
+            time.sleep(.3)
+            assert window.evaluate_js("currentMeetingData.is_fragment === true && document.getElementById('protocolScope').innerText.includes('целиком')")
+            with bridge.jobs._lock:
+                bridge.jobs._jobs['ui_job_pending'].update(state='done', meeting_id=newer['id'])
+            window.evaluate_js("document.getElementById('fullProtocolButton').click()")
+            wait_js(window, "currentMeetingData?.id === 'ui_test_new_file'")
+            assert window.evaluate_js("!currentMeetingData.is_fragment && currentMeetingData.audio_duration === 19 && currentMeetingData.tasks.length > 0")
+            # Clicking the task tab from an excerpt also opens its own full source.
+            window.evaluate_js("openDemoMeeting(" + json.dumps(fragment_id) + ", 'fragment')")
+            wait_js(window, "currentMeetingData?.is_fragment === true")
+            window.evaluate_js("switchTab('tasks')")
+            wait_js(window, "currentMeetingData?.id === 'ui_test_new_file' && document.getElementById('tabContentTasks').classList.contains('active')")
+            report['tasks_and_moments_use_full_original'] = True
+            report['full_protocol_button'] = True
             capture_ui(window, '04-fragment')
         finally:
             with bridge.jobs._lock:
@@ -210,7 +249,32 @@ def run_gui_check(window, bridge):
         window.evaluate_js("openSettingsModal()")
         wait_js(window, "document.getElementById('settingsPrompt').getBoundingClientRect().height >= 70 && document.getElementById('settingsParticipants').getBoundingClientRect().height >= 70")
         capture_ui(window, '06-settings')
-        window.evaluate_js("closeSettingsModal()")
+        assert window.evaluate_js("!document.getElementById('settingsOpacity').disabled")
+        window.evaluate_js("document.getElementById('settingsVisualizer').value = 'circle'; document.getElementById('settingsOpacity').value = '75'; updateOpacityLabel(); saveSettings()")
+        wait_js(window, "document.getElementById('settingsModal').style.display === 'none' && document.getElementById('waveformCanvas').dataset.mode === 'circle'")
+        assert abs(float(window.native.Opacity) - .75) < .01
+        assert bridge.get_settings()['visualizer_mode'] == 'circle'
+        settings_path = Path(bridge.save_settings.__func__.__globals__['SETTINGS_PATH'])
+        persisted = json.loads(settings_path.read_text(encoding='utf-8'))
+        assert persisted['visualizer_mode'] == 'circle' and persisted['window_opacity'] == 75
+        idle_circle = window.evaluate_js("document.getElementById('waveformCanvas').toDataURL()")
+        time.sleep(.2)
+        assert idle_circle == window.evaluate_js("document.getElementById('waveformCanvas').toDataURL()")
+        window.evaluate_js("let p = document.getElementById('monitorAudio'); p.src = " + json.dumps(url) + "; p.play()")
+        wait_js(window, "document.getElementById('waveformCanvas').dataset.signal === 'audio'")
+        assert idle_circle != window.evaluate_js("document.getElementById('waveformCanvas').toDataURL()")
+        capture_ui(window, '07-circle-opacity')
+        window.evaluate_js("document.getElementById('monitorAudio').pause()")
+        wait_js(window, "document.getElementById('waveformCanvas').dataset.signal === 'idle'")
+        assert idle_circle == window.evaluate_js("document.getElementById('waveformCanvas').toDataURL()")
+        window.evaluate_js("openSettingsModal()")
+        wait_js(window, "document.getElementById('settingsModal').style.display === 'flex'")
+        assert window.evaluate_js("document.getElementById('settingsVisualizer').value === 'circle' && document.getElementById('settingsOpacity').value === '75'")
+        window.evaluate_js("document.getElementById('settingsVisualizer').value = 'bars'; document.getElementById('settingsOpacity').value = '100'; saveSettings()")
+        wait_js(window, "document.getElementById('settingsModal').style.display === 'none' && document.getElementById('waveformCanvas').dataset.mode === 'bars'")
+        assert abs(float(window.native.Opacity) - 1) < .01
+        report['circle_audio_and_static_silence'] = True
+        report['native_window_opacity_and_saved_settings'] = True
         report['compact_workspace'] = True
         report.update(ok=True, engine="offline", idle_waveform_static=True, unicode_transcript=True,
                       task_table=True, parallel_controls=True, actual_webview2=True)

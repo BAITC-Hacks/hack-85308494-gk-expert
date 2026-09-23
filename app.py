@@ -83,7 +83,8 @@ class ProtocolApiBridge:
     """
 
     def __init__(self):
-        self.settings = {"company": os.getenv("DEFAULT_COMPANY", "Организация"), "prompt": "", "language": "auto"}
+        self.settings = {"company": os.getenv("DEFAULT_COMPANY", "Организация"), "prompt": "", "language": "auto",
+                         "visualizer_mode": "bars", "window_opacity": 100}
         try:
             with open(SETTINGS_PATH, encoding="utf-8") as stream:
                 self.settings.update(json.load(stream))
@@ -154,6 +155,8 @@ class ProtocolApiBridge:
             settings = dict(self.settings, recording_saved_at=now_iso())
             job = self.jobs.submit(tracks['master'], settings, tracks,
                                    'Запись ' + time.strftime('%d.%m.%Y %H:%M:%S'))
+            if self.live:
+                self.media.bind_session(self.live.status()['session_id'], job['id'])
             return {'job': job}
 
     def submit_existing_audio(self, filepath, title=None):
@@ -228,6 +231,7 @@ class ProtocolApiBridge:
             self.exporter.export_to_txt(meeting, f"Стенограмма_{meeting['id']}.txt")
             self.sed.export_to_sed_json(meeting, f"СЭД_{meeting['id']}.json")
             self.manager.save_meeting(meeting)
+            self.media.complete_job(settings.get('job_id'), transcript)
             return {"meeting": meeting}
         finally:
             self._processing = {"busy": False, "stage": "Готов", "started_at": 0}
@@ -238,6 +242,7 @@ class ProtocolApiBridge:
 
     def get_settings(self, params=None):
         return dict(self.settings, data_dir=DATA_DIR, processing_location="local",
+                    window_opacity_supported=hasattr(getattr(self._window, 'native', None), 'Opacity'),
                     speaker_model_ready=self.speakers.ready(),
                     model_ready=all((self.stt.model_dir / name).is_file() for name in ("model.bin", "config.json", "tokenizer.json")))
 
@@ -248,14 +253,31 @@ class ProtocolApiBridge:
             if not data:
                 raise ValueError('Фрагмент недоступен. Выберите его повторно.')
             data['text'] = ' '.join(s['text'] for s in data['segments'])
-            meeting = self.nlp.process_transcript(data)
+            job = self.jobs.get(data['full_job_id']) if data.get('full_job_id') else None
+            parent = self.manager.get_meeting(job['meeting_id']) if job and job.get('meeting_id') else None
+            if parent:
+                data['speakers'] = parent.get('speakers', [])
+                profiles = {p['id']: p for p in data['speakers']}
+                for segment in data['segments']:
+                    profile = profiles.get(segment.get('speaker_id'))
+                    if profile:
+                        segment.update(speaker=profile.get('name') or profile['label'],
+                                       speaker_name=profile.get('name'), name_status=profile['name_status'])
+            # A preview is only a transcript. Decisions/tasks always come from the full recording.
+            meeting = self.nlp.process_transcript(data, analyze=False)
             def clock(value):
                 return f'{int(value) // 60:02d}:{int(value) % 60:02d}'
             meeting.update(id=meeting_id, title=f"Фрагмент {clock(data['source_start'])} — {clock(data['source_end'])}",
                            audio_url=data['audio_url'], source_label=data['source_label'],
-                           fragment_ready=data['fragment_ready'], fragment_version=data['fragment_version'], is_fragment=True)
+                           fragment_ready=data['fragment_ready'], fragment_version=data['fragment_version'], is_fragment=True,
+                           full_job_id=data.get('full_job_id'), full_meeting_id=parent['id'] if parent else None,
+                           full_state=job['state'] if job else 'recording', full_error=job.get('error') if job else None,
+                           analysis_scope='full_recording_required')
+            meeting['summary'] = []
+            meeting['executive_memo'] = {}
+            meeting['warnings'] = ['Просмотр отрывка. Поручения, ключевые моменты и саммари доступны в протоколе всего исходного аудио: нажмите «Полностью».']
             if not data['fragment_ready']:
-                meeting['warnings'] = ['Этот фрагмент ещё распознаётся. Его текст появится автоматически.']
+                meeting['warnings'].append('Этот фрагмент ещё распознаётся. Его текст появится автоматически.')
             return meeting
         meeting = self.manager.get_meeting(meeting_id)
         if meeting and meeting.get('playback_file'):
@@ -274,7 +296,9 @@ class ProtocolApiBridge:
         return self.manager.list_meetings()
 
     def update_speaker_name(self, params):
-        meeting = self.manager.get_meeting(params.get('meeting_id'))
+        requested = params.get('meeting_id')
+        target = self.get_meeting({'id': requested})
+        meeting = self.manager.get_meeting(target.get('full_meeting_id') if target and target.get('is_fragment') else requested)
         key = params.get('speaker_id')
         if not meeting or key not in {s['id'] for s in meeting.get('speakers', [])}:
             raise ValueError('Голос не найден в выбранном совещании.')
@@ -290,7 +314,7 @@ class ProtocolApiBridge:
         meeting['participants'] = [{'name': p.get('name') or p['label'], 'role': 'Не указана',
                                     'speaker_id': p['id'], 'name_status': p['name_status']} for p in meeting['speakers']]
         self.manager.save_meeting(meeting)
-        return self.get_meeting({'id': meeting['id']})
+        return self.get_meeting({'id': requested})
 
     def reprocess_meeting(self, params):
         meeting = self.get_meeting({'id': params.get('id')})
@@ -343,28 +367,33 @@ class ProtocolApiBridge:
         meeting_id = params.get("meeting_id")
         return self.comp_mgr.get_notes(meeting_id)
 
+    def _full_export_meeting(self, params):
+        meeting = self.get_meeting({'id': params.get('meeting_id')})
+        if meeting and meeting.get('is_fragment'):
+            if not meeting.get('full_meeting_id'):
+                raise ValueError('Полный протокол ещё готовится. Дождитесь обработки исходной записи.')
+            meeting = self.get_meeting({'id': meeting['full_meeting_id']})
+        return meeting
+
     def export_docx(self, params):
-        meeting_id = params.get("meeting_id")
-        meeting = self.get_meeting({'id': meeting_id})
+        meeting = self._full_export_meeting(params)
         if not meeting:
             return {"error": "Meeting not found"}
-        path = self.exporter.export_to_docx(meeting, f"Протокол_{meeting_id}.docx")
+        path = self.exporter.export_to_docx(meeting, f"Протокол_{meeting['id']}.docx")
         return {"filepath": os.path.abspath(path)}
 
     def export_pdf(self, params):
-        meeting_id = params.get("meeting_id")
-        meeting = self.get_meeting({'id': meeting_id})
+        meeting = self._full_export_meeting(params)
         if not meeting:
             return {"error": "Meeting not found"}
-        path = self.exporter.export_to_pdf(meeting, f"Протокол_{meeting_id}.pdf")
+        path = self.exporter.export_to_pdf(meeting, f"Протокол_{meeting['id']}.pdf")
         return {"filepath": os.path.abspath(path)}
 
     def export_sed(self, params):
-        meeting_id = params.get("meeting_id")
-        meeting = self.get_meeting({'id': meeting_id})
+        meeting = self._full_export_meeting(params)
         if not meeting:
             return {"error": "Meeting not found"}
-        path = self.sed.export_to_sed_json(meeting, f"СЭД_{meeting_id}.json")
+        path = self.sed.export_to_sed_json(meeting, f"СЭД_{meeting['id']}.json")
         return {"filepath": os.path.abspath(path)}
 
     def export_transcript(self, params):
@@ -390,6 +419,19 @@ class ProtocolApiBridge:
         self._downloads[token] = path
         return {'download_url': '/download/' + token, 'filename': os.path.basename(path)}
 
+    def apply_window_appearance(self, *args):
+        native = getattr(self._window, 'native', None)
+        if native is None or not hasattr(native, 'Opacity'):
+            return
+        opacity = max(40, min(100, int(self.settings.get('window_opacity', 100)))) / 100
+        def apply():
+            native.Opacity = opacity
+        if getattr(native, 'InvokeRequired', False):
+            from System import Action
+            native.Invoke(Action(apply))
+        else:
+            apply()
+
     def save_settings(self, params):
         company = str(params.get("company", self.settings["company"])).strip()[:200] or "Организация"
         prompt = str(params.get("prompt", self.settings.get("prompt", ""))).strip()[:4000]
@@ -400,14 +442,22 @@ class ProtocolApiBridge:
         speaker_count = int(params.get('speaker_count', self.settings.get('speaker_count', 0)))
         if not 0 <= speaker_count <= 32:
             raise ValueError('Количество участников должно быть от 0 (авто) до 32.')
+        visualizer_mode = params.get('visualizer_mode', self.settings.get('visualizer_mode', 'bars'))
+        if visualizer_mode not in ('bars', 'circle'):
+            raise ValueError('Выберите стандартный эквалайзер или пульсирующий круг.')
+        window_opacity = int(params.get('window_opacity', self.settings.get('window_opacity', 100)))
+        if not 40 <= window_opacity <= 100:
+            raise ValueError('Непрозрачность окна: от 40 до 100 процентов.')
         settings = {"company": company, "prompt": prompt, "language": language,
-                    'participants': participants, 'speaker_count': speaker_count}
+                    'participants': participants, 'speaker_count': speaker_count,
+                    'visualizer_mode': visualizer_mode, 'window_opacity': window_opacity}
         temporary = SETTINGS_PATH + ".tmp"
         with open(temporary, "w", encoding="utf-8") as stream:
             json.dump(settings, stream, ensure_ascii=False, indent=2)
         os.replace(temporary, SETTINGS_PATH)
         self.settings = settings
         os.environ["DEFAULT_COMPANY"] = company
+        self.apply_window_appearance()
         return {"success": True}
 
 
@@ -649,6 +699,7 @@ def main():
                 text_select=True
             )
             bridge._window = window
+            window.events.loaded += bridge.apply_window_appearance
 
             def can_close():
                 if bridge.recorder.is_recording or any(job['state'] in ('queued', 'running') for job in bridge.jobs.list()):

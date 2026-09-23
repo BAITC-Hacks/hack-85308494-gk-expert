@@ -208,7 +208,7 @@
         <span id="metaDuration">--</span>
       </div>
     </div>
-    <div class="protocol-actions"><button onclick="exportDocx()">Word</button><button onclick="exportPdf()">PDF</button><button onclick="exportTranscript()">TXT</button><button class="protocol-close" onclick="toggleProtocolPanel()" title="Закрыть протокол"><i class="fa-solid fa-xmark"></i></button></div>
+    <div class="protocol-actions"><button id="fullProtocolButton" onclick="openFullProtocol()" hidden><i class="fa-solid fa-expand"></i> Полностью</button><button onclick="exportDocx()">Word</button><button onclick="exportPdf()">PDF</button><button onclick="exportTranscript()">TXT</button><button class="protocol-close" onclick="toggleProtocolPanel()" title="Закрыть протокол"><i class="fa-solid fa-xmark"></i></button></div>
   </div>
   
   <div class="protocol-tabs">
@@ -221,6 +221,7 @@
   </div>
   
   <div class="protocol-content-area">
+    <div id="protocolScope" class="protocol-scope"></div>
     <div id="protocolWarnings" class="protocol-warning"></div>
     <!-- Tasks Tab -->
     <div id="tabContentTasks" class="tab-pane active">
@@ -326,6 +327,15 @@
   <div class="modal-box">
     <div class="modal-header">Настройки системы <button class="modal-close" onclick="closeSettingsModal()">&times;</button></div>
     <div class="modal-body">
+      <fieldset class="appearance-settings">
+        <legend>Внешний вид</legend>
+        <label for="settingsVisualizer">Вид эквалайзера</label>
+        <select id="settingsVisualizer"><option value="bars">Стандартный эквалайзер · полосы</option><option value="circle">Пульсирующий круг</option></select>
+        <label for="settingsOpacity">Прозрачность окна · непрозрачность <output id="opacityValue" for="settingsOpacity">100%</output></label>
+        <input id="settingsOpacity" type="range" min="40" max="100" step="5" value="100" oninput="updateOpacityLabel()">
+        <p id="opacityHint"></p>
+        <p>Изменения применяются после сохранения. Круг и полосы реагируют только на звук.</p>
+      </fieldset>
       <label style="font-size:12px;color:var(--obs-text-dim);margin-bottom:4px;display:block;">Организация по умолчанию:</label>
       <input type="text" id="settingsCompany" placeholder="Название организации (например: АО «Самрук-Қазына Өңдеу»)">
       <label for="settingsLanguage">Язык распознавания</label><select id="settingsLanguage"><option value="auto">Авто / смешанная речь</option><option value="ru">Русский</option><option value="kk">Қазақша</option></select>

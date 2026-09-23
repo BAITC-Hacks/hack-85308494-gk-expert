@@ -66,7 +66,7 @@ def run(bridge, start_server):
                         raise RuntimeError(job['error'])
                     if job['state'] == 'done':
                         result = {'meeting': bridge.get_meeting({'id': job['meeting_id']})}
-                        report['chunked_job'] = True
+                        report['full_file_job'] = True
                         break
                     time.sleep(0.2)
                 else:
@@ -76,6 +76,16 @@ def run(bridge, start_server):
             assert meeting["processing_location"] == "local"
             assert bridge.manager.get_meeting(meeting["id"])["transcript"] == meeting["transcript"]
             assert meeting['diarization'] == 'performed', meeting.get('warnings')
+            if job.get('current_chunk'):
+                fragment_id = 'fragment_' + job['current_chunk']['audio_url'].split('/')[-1]
+                fragment = bridge.get_meeting({'id': fragment_id})
+                assert fragment['full_meeting_id'] == meeting['id']
+                assert not fragment['tasks'] and not fragment['key_moments']
+                assert bridge._full_export_meeting({'meeting_id': fragment_id})['id'] == meeting['id']
+                report['fragment_links_full_original'] = True
+            if meeting['audio_duration'] > 40:
+                assert max(line.get('end', 0) for line in meeting['dialogue']) > meeting['audio_duration'] * .8
+                report['long_audio_tail_transcribed'] = True
             report['acoustic_speakers'] = len(meeting.get('speakers', []))
             report['context_named_speakers'] = sum(bool(s.get('name')) for s in meeting.get('speakers', []))
             report['speaker_diarization'] = meeting['diarization']

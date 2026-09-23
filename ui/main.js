@@ -128,7 +128,7 @@ async function selectScreenShare() {
     videoEl.style.display = 'block';
     canvasEl.style.display = 'none';
     btn.innerHTML = '<i class="fa-solid fa-stop"></i> Отключить захват';
-    updateAiThought("Экран выбран. Микрофон выключен; записывается только звук компьютера через WASAPI Loopback.");
+    updateAiThought("Экран выбран. Для записи включён только звук компьютера через WASAPI Loopback; микрофон выключен.");
 
     screenStream.getVideoTracks()[0].onended = () => {
       videoEl.style.display = 'none';
@@ -249,8 +249,9 @@ function renderMeeting(m) {
   // Counts
   const tasks = m.tasks || [];
   const moments = m.key_moments || [];
-  document.getElementById('tabTasksCount').textContent = tasks.length;
-  document.getElementById('tabMomentsCount').textContent = moments.length;
+  document.getElementById('tabTasksCount').textContent = m.is_fragment ? 'весь файл' : tasks.length;
+  document.getElementById('tabMomentsCount').textContent = m.is_fragment ? 'весь файл' : moments.length;
+  updateProtocolScope(m);
 
   // Render components
   renderMetrics(tasks);
@@ -586,6 +587,14 @@ function renderTranscript(dialogue) {
       <div class="chat-text">${escapeHtml(d.text)}</div>
     `;
     container.appendChild(bubble);
+    if (d.speaker_id && (currentMeetingData.speakers || []).some(p => p.id === d.speaker_id)) {
+      const edit = document.createElement('button'); edit.className = 'speaker-edit-button';
+      edit.innerHTML = '<i class="fa-solid fa-pencil"></i>';
+      edit.title = 'Изменить имя говорящего'; edit.setAttribute('aria-label', 'Изменить имя: ' + d.speaker);
+      edit.disabled = !!currentMeetingData.is_fragment && !currentMeetingData.full_meeting_id;
+      edit.onclick = () => editSpeakerInline(bubble, d.speaker_id);
+      bubble.querySelector('.chat-speaker').appendChild(edit);
+    }
   });
 }
 
@@ -700,6 +709,7 @@ async function exportSedJson() {
 // TABS & UTILS
 // --------------------------------------------------------------------------
 function switchTab(tabName) {
+  if (currentMeetingData?.is_fragment && tabName !== 'transcript') { openFullProtocol(tabName); return; }
   document.querySelectorAll('.protocol-tabs button').forEach(b => b.classList.remove('active'));
   document.querySelectorAll('.tab-pane').forEach(c => c.classList.remove('active'));
 
@@ -734,6 +744,13 @@ async function openSettingsModal() {
     document.getElementById('settingsLanguage').value = settings.language || 'auto';
     document.getElementById('settingsParticipants').value = settings.participants || '';
     document.getElementById('settingsSpeakerCount').value = settings.speaker_count || 0;
+    document.getElementById('settingsVisualizer').value = settings.visualizer_mode || 'bars';
+    document.getElementById('settingsOpacity').value = settings.window_opacity || 100;
+    document.getElementById('settingsOpacity').disabled = !settings.window_opacity_supported;
+    document.getElementById('opacityHint').textContent = settings.window_opacity_supported
+      ? '100% — непрозрачное окно. Меньше значение — сильнее виден рабочий стол за программой.'
+      : 'Прозрачность окна доступна в настольном EXE.';
+    updateOpacityLabel();
   } catch (err) { updateAiThought(err.message); }
   document.getElementById('settingsModal').style.display = 'flex';
 }
@@ -745,10 +762,22 @@ function closeSettingsModal() {
 async function saveSettings() {
   const company = document.getElementById('settingsCompany') ? document.getElementById('settingsCompany').value.trim() : '';
   const prompt = document.getElementById('settingsPrompt') ? document.getElementById('settingsPrompt').value.trim() : '';
-  await callApi('save_settings', { company, prompt, language: document.getElementById('settingsLanguage').value,
-    participants: document.getElementById('settingsParticipants').value, speaker_count: Number(document.getElementById('settingsSpeakerCount').value) });
-  updateAiThought("Настройки организации успешно сохранены в локальный конфигуратор.");
-  closeSettingsModal();
+  const settings = { company, prompt, language: document.getElementById('settingsLanguage').value,
+    participants: document.getElementById('settingsParticipants').value, speaker_count: Number(document.getElementById('settingsSpeakerCount').value),
+    visualizer_mode: document.getElementById('settingsVisualizer').value, window_opacity: Number(document.getElementById('settingsOpacity').value) };
+  try {
+    await callApi('save_settings', settings);
+    applyAppearance(settings);
+    updateAiThought('Настройки сохранены. Оформление будет таким же при следующем запуске.');
+    closeSettingsModal();
+  } catch (error) { updateAiThought('Не удалось сохранить настройки: ' + error.message); }
+}
+
+function updateOpacityLabel() {
+  document.getElementById('opacityValue').textContent = document.getElementById('settingsOpacity').value + '%';
+}
+function applyAppearance(settings) {
+  window.qazaqVisualizerMode = settings.visualizer_mode === 'circle' ? 'circle' : 'bars';
 }
 
 function escapeHtml(str) {

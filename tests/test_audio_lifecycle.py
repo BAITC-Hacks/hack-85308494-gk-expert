@@ -186,6 +186,35 @@ class TestAudioLifecycle(unittest.TestCase):
         self.recorder.record_thread.join(timeout=1)
         self.assertFalse(self.recorder.record_thread.is_alive())
 
+    def test_muted_microphone_is_absent_from_live_and_saved_mix(self):
+        import numpy as np
+        for device in self.audio.devices:
+            device.update(defaultSampleRate=16000, maxInputChannels=1)
+        self.recorder.set_muted('mic', True)
+        self.recorder.start_recording('mix')
+        mic, system = self.audio.streams
+        mic.emit(25000)
+        system.emit(6000)
+        np.testing.assert_allclose(self.recorder.read_live_window(0, 128 / 16000),
+                                   np.array([1200] * 64 + [6000] * 64) / 32768)
+        self.assertEqual(self.recorder.get_status()['mic_level'], 0)
+        self.recorder.set_muted('mic', False)
+        mic.emit(3000)
+        system.emit(6000)
+        paths = self.recorder.stop_recording()
+        with wave.open(paths['mic'], 'rb') as stream:
+            values = np.frombuffer(stream.readframes(192), dtype='<i2')
+            np.testing.assert_array_equal(values, [0] * 128 + [3000] * 64)
+        with wave.open(paths['master'], 'rb') as stream:
+            values = np.frombuffer(stream.readframes(192), dtype='<i2')
+            np.testing.assert_array_equal(values, [1200] * 64 + [6000] * 64 + [9000] * 64)
+
+    def test_system_mode_never_opens_microphone(self):
+        self.recorder.start_recording('system')
+        self.assertEqual([stream.options['input_device_index'] for stream in self.audio.streams], [1])
+        self.assertEqual(self.recorder.get_status()['active_sources'], ['sys'])
+        self.recorder.stop_recording()
+
     def test_repeated_recordings_have_unique_paths(self):
         first = self.recorder.start_recording('mic')
         self.recorder.stop_recording()

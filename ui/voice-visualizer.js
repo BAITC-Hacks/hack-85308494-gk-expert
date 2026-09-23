@@ -1,4 +1,4 @@
-/* Blue/violet rounded bars adapted from h/desktop_app/voice-visualizer.js.
+/* Muted blue rounded bars adapted from h/desktop_app/voice-visualizer.js.
    Rendering only: players, capture, job selection and audio routing stay in workspace.js. */
 'use strict';
 class VoiceVisualizer {
@@ -26,43 +26,62 @@ class VoiceVisualizer {
     return bands;
   }
   paint(target, now = performance.now()) {
+    if (this.lastFrame && now - this.lastFrame < 32) return;
     const rect = this.canvas.getBoundingClientRect();
     if (!rect.width || !rect.height) { this.lastFrame = now; return; }
     const scale = Math.min(window.devicePixelRatio || 1, 2);
     const width = Math.round(rect.width * scale), height = Math.round(rect.height * scale);
     if (this.canvas.width !== width || this.canvas.height !== height) {
       this.canvas.width = width; this.canvas.height = height;
+      this.wasQuiet = false;
     }
+    const quiet = !target.some(value => value > .008);
+    const mode = window.qazaqVisualizerMode || 'bars';
+    if (quiet && this.wasQuiet && mode === this.lastMode) { this.lastFrame = now; return; }
+    this.lastMode = mode; this.canvas.dataset.mode = mode;
+    this.wasQuiet = quiet;
     const context = this.canvas.getContext('2d');
     context.setTransform(scale, 0, 0, scale, 0, 0);
     context.clearRect(0, 0, rect.width, rect.height);
     const dt = Math.min(80, now - (this.lastFrame || now)); this.lastFrame = now;
-    const quiet = !target.some(value => value > .008);
+    for (let i = 0; i < 40; i++) {
+      const next = target[i] || 0;
+      const smoothing = this.reduced.matches ? 1 : 1 - Math.exp(-dt / (next > this.values[i] ? 75 : 190));
+      this.values[i] = quiet ? 0 : this.values[i] + (next - this.values[i]) * smoothing;
+    }
+    this.canvas.dataset.signal = quiet ? 'idle' : 'audio';
+    if (mode === 'circle') {
+      const energy = Math.sqrt(this.values.reduce((sum, value) => sum + value * value, 0) / 40);
+      const base = Math.min(50, rect.height * .25, rect.width * .2);
+      const radius = base * (1 + energy * .8);
+      const cx = rect.width / 2, cy = rect.height / 2;
+      context.globalAlpha = 1; context.shadowBlur = 0;
+      context.beginPath(); context.arc(cx, cy, radius + 4 + energy * 7, 0, Math.PI * 2);
+      context.strokeStyle = `rgba(132,161,190,${.15 + energy * .3})`; context.lineWidth = 1; context.stroke();
+      context.beginPath(); context.arc(cx, cy, radius, 0, Math.PI * 2);
+      context.fillStyle = `rgba(109,144,178,${.07 + energy * .19})`; context.fill();
+      context.strokeStyle = `rgba(151,180,206,${.4 + energy * .5})`; context.lineWidth = 2; context.stroke();
+      return;
+    }
     const spacing = Math.min(12, Math.max(5, (rect.width - 48) / 40));
     const barWidth = Math.min(5, spacing * .43);
     const left = (rect.width - spacing * 39 - barWidth) / 2;
     const maximum = Math.min(88, rect.height * .88 - 4);
     for (let i = 0; i < 40; i++) {
-      const next = target[i] || 0;
-      const smoothing = this.reduced.matches ? 1 : 1 - Math.exp(-dt / (next > this.values[i] ? 75 : 190));
-      // Silence and pause return immediately to a fixed baseline: no idle sine animation.
-      this.values[i] = quiet ? 0 : this.values[i] + (next - this.values[i]) * smoothing;
       const level = this.values[i];
       const size = 3 + level * maximum;
       const x = left + i * spacing, y = (rect.height - size) / 2;
-      const hue = 218 + i / 39 * 71;
+      const hue = 208 + i / 39 * 12;
       const gradient = context.createLinearGradient(0, y + size, 0, y);
-      gradient.addColorStop(0, `hsl(${hue} 42% 53%)`);
-      gradient.addColorStop(1, `hsl(${hue + 8} 56% 73%)`);
+      gradient.addColorStop(0, `hsl(${hue} 20% 48%)`);
+      gradient.addColorStop(1, `hsl(${hue} 25% 67%)`);
       context.fillStyle = gradient;
       context.globalAlpha = .4 + level * .57;
-      context.shadowColor = 'rgba(164,125,213,.2)';
-      context.shadowBlur = level > .25 ? 7 : 0;
+      context.shadowBlur = 0;
       context.beginPath();
       context.roundRect(x, y, barWidth, size, barWidth / 2);
       context.fill();
     }
     context.globalAlpha = 1; context.shadowBlur = 0;
-    this.canvas.dataset.signal = quiet ? 'idle' : 'audio';
   }
 }

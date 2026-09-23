@@ -16,7 +16,7 @@ ROOT_FILES = ('app.py', 'requirements.txt', 'requirements-local-stt.txt', 'run_a
               'build_portable.py', 'QazaqProtocolLocal.spec', 'README.md', 'LOCAL_STT.md', 'RUN_LOCAL.md', 'VERIFICATION.md', 'push_to_git.bat')
 TEST_FILES = ('test_audio_lifecycle.py', 'test_audio_mixing.py', 'test_stt_offline.py',
               'test_nlp_local.py', 'test_document_local.py', 'test_upload_api.py',
-              'test_audio_pipeline.py', 'test_save_dialog.py', 'test_speaker_engine.py', 'test_speaker_context.py')
+              'test_audio_pipeline.py', 'test_save_dialog.py', 'test_speaker_engine.py', 'test_speaker_context.py', 'test_recording_controls.py')
 
 
 def git(*args):

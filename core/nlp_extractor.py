@@ -63,7 +63,7 @@ class NLPExtractor:
             return speaker
         return "Не указан"
 
-    def process_transcript(self, transcript_data: Dict, model: str = "offline") -> Dict:
+    def process_transcript(self, transcript_data: Dict, model: str = "offline", *, analyze=True) -> Dict:
         # Even stale UI requests for gpt-4o/codex-astra stay on this computer.
         text = str(transcript_data.get("text") or "").strip()
         segments = transcript_data.get("segments") or ([{"text": text, "start": 0}] if text else [])
@@ -73,6 +73,8 @@ class NLPExtractor:
         pending, pending_stamp, pending_speaker = "", "00:00", "Говорящий не определён"
 
         def consume(sentence, stamp, speaker):
+            if not analyze:
+                return
             sentence = sentence.strip()
             if not sentence:
                 return

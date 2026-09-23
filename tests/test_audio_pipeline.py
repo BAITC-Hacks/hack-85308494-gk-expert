@@ -17,23 +17,29 @@ class PipelineTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.media = MediaStore(Path(self.temporary.name) / 'playback')
 
-    def test_windows_include_short_tail_and_global_timestamps(self):
+    def test_full_file_single_pass_with_global_timestamps_and_short_preview_tail(self):
         samples = np.zeros(RATE * 43, dtype=np.float32)
         calls = []
         engine = SimpleNamespace(DEFAULT_PROMPT='контекст')
         def transcribe(path, **kwargs):
             self.assertTrue(Path(path).is_file())
+            self.assertEqual(len(kwargs['samples']), RATE * 43)
             calls.append(path)
-            return {'segments': [{'text': 'Әлия отчёт', 'start': 1, 'end': 2, 'words': [{'start': 1, 'end': 2}]}]}
+            segments = [{'text': 'Әлия отчёт', 'start': start, 'end': start + 1,
+                         'words': [{'start': start, 'end': start + 1}]} for start in (1, 21, 41)]
+            for segment in segments:
+                kwargs['on_segment'](segment)
+            return {'segments': segments}
         engine.transcribe = transcribe
         updates = []
         with patch('faster_whisper.audio.decode_audio', return_value=samples):
-            result = WindowTranscriber(engine, self.media).process('input.wav', {}, lambda **fields: updates.append(fields))
-        self.assertEqual(len(calls), 3)
+            result = WindowTranscriber(engine, self.media).process('input.wav', {'job_id': 'original'}, lambda **fields: updates.append(fields))
+        self.assertEqual(len(calls), 1)
         self.assertEqual([s['start'] for s in result['segments']], [1, 21, 41])
         self.assertEqual(result['segments'][-1]['words'][0]['end'], 42)
         intervals = [u['current_chunk'] for u in updates if 'current_chunk' in u]
-        self.assertEqual([(x['start'], x['end']) for x in intervals], [(0, 20), (20, 40), (40, 43)])
+        self.assertEqual([(x['start'], x['end']) for x in intervals], [(0, 20), (0, 20), (20, 40), (40, 43)])
+        self.assertTrue(all(self.media.fragment(x['audio_url'].split('/')[-1])['full_job_id'] == 'original' for x in intervals))
         self.assertEqual(updates[-1]['completed_seconds'], 43)
 
     def test_live_completes_while_file_worker_is_blocked(self):
@@ -94,3 +100,14 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(fragment['segments'][0]['text'], 'текущий')
         self.assertEqual(fragment['segments'][0]['words'][0]['start'], 1)
         self.assertEqual(fragment['audio_url'], url)
+
+    def test_live_fragments_remain_bound_to_their_own_recording_after_stop(self):
+        _, first = self.media.save(np.zeros(RATE), 'live')
+        _, second = self.media.save(np.zeros(RATE), 'live')
+        self.media.publish_fragment(first, 0, 1, session_id='first')
+        self.media.bind_session('first', 'job_first')
+        self.media.publish_fragment(second, 0, 1, session_id='second')
+        self.media.bind_session('second', 'job_second')
+        self.media.publish_fragment(first, 0, 1, [])
+        self.assertEqual(self.media.fragment(first.split('/')[-1])['full_job_id'], 'job_first')
+        self.assertEqual(self.media.fragment(second.split('/')[-1])['full_job_id'], 'job_second')

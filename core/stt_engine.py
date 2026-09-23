@@ -60,14 +60,15 @@ class SpeechToTextEngine:
             device=self.device,
             compute_type=self.compute_type,
             local_files_only=True,
-            cpu_threads=2,
+            cpu_threads=2 if self.live else min(4, max(1, (os.cpu_count() or 4) // 2)),
         )
         if not model.model.is_multilingual:
             raise RuntimeError("Нужна многоязычная модель Whisper; модель .en не поддерживает русский и казахский.")
         self._model = model
         return model
 
-    def transcribe(self, audio_file_path: str, custom_prompt: Optional[str] = None, language: Optional[str] = None) -> Dict:
+    def transcribe(self, audio_file_path: str, custom_prompt: Optional[str] = None, language: Optional[str] = None,
+                   *, on_segment=None, samples=None) -> Dict:
         """Return the existing transcript schema using only a local model."""
         audio_path = Path(audio_file_path)
         if not audio_path.is_file():
@@ -86,7 +87,7 @@ class SpeechToTextEngine:
         with self._lock:
             model = self._load_model()
             raw_segments, info = model.transcribe(
-                str(audio_path),
+                samples if samples is not None else str(audio_path),
                 language=selected_language,
                 task="transcribe",
                 multilingual=selected_language is None,
@@ -108,6 +109,8 @@ class SpeechToTextEngine:
                         for word in (segment.words or [])
                     ],
                 })
+                if on_segment:
+                    on_segment(segments[-1])
 
         return {
             "text": " ".join(segment["text"] for segment in segments if segment["text"]),

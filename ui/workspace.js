@@ -69,6 +69,7 @@ async function initWorkspace() {
   document.getElementById('protocolPanel').classList.remove('open');
   currentMeetingData = null;
   await initAudioDevices();
+  applyAppearance(await callApi('get_settings'));
   const audioStatus = await callApi('get_recording_status');
   applySourceStatus(audioStatus);
   selectSource('sys');
@@ -393,7 +394,10 @@ async function pollWorkspace() {
     if (protocolSelection.kind === 'fragment') {
       const version = selectionVersion;
       const fragment = await callApi('get_meeting', {id: protocolSelection.id});
-      if (version === selectionVersion && currentMeetingData?.id === fragment.id && currentMeetingData.fragment_version !== fragment.fragment_version) renderMeeting(fragment);
+      if (version === selectionVersion && currentMeetingData?.id === fragment.id) {
+        if (currentMeetingData.fragment_version !== fragment.fragment_version || currentMeetingData.full_meeting_id !== fragment.full_meeting_id) renderMeeting(fragment);
+        else { Object.assign(currentMeetingData, {full_job_id: fragment.full_job_id, full_state: fragment.full_state, full_error: fragment.full_error}); updateProtocolScope(currentMeetingData); }
+      }
     }
     setProcessing(jobs.some(j => j.state === 'running'));
     document.getElementById('liveStatusPill').textContent = isRecording ? (isPaused ? 'Запись на паузе' : '● Запись + live') : isProcessing ? 'Обработка файла' : 'Готов';
@@ -456,7 +460,7 @@ function startWaveformAnimation() {
     const status = playing ? 'Воспроизведение записи' : isPaused ? 'Запись на паузе' : isRecording ? (latestAudioLevel > .008 ? 'Слышу голос' : 'Слушаю · ожидание речи') : 'Готов слушать';
     const label = document.getElementById('voiceState');
     if (label.textContent !== status) { label.textContent = status; canvas.setAttribute('aria-label', 'Эквалайзер: ' + status); }
-    document.getElementById('voiceDetail').textContent = playing ? '40 частотных полос' : 'Уровень входящего звука';
+    document.getElementById('voiceDetail').textContent = playing ? (window.qazaqVisualizerMode === 'circle' ? 'Круг · уровень звука' : '40 частотных полос') : 'Уровень входящего звука';
     waveformAnimationId = requestAnimationFrame(draw);
   }
   draw(performance.now());
@@ -465,6 +469,9 @@ function startWaveformAnimation() {
 async function saveExport(format) {
   try {
     if (!await ensureSelectedMeeting()) return;
+    if (currentMeetingData.is_fragment && format !== 'txt') {
+      if (!await openFullProtocol()) return;
+    }
     if (currentMeetingData.is_fragment && !currentMeetingData.fragment_ready) { updateAiThought('Этот фрагмент ещё распознаётся. Дождитесь появления текста.'); return; }
     const result = await callApi('save_export', {meeting_id: currentMeetingData.id, format});
     if (result.cancelled) return;
@@ -491,6 +498,7 @@ async function reprocessSelectedMeeting() {
 function renderSpeakerCards(meeting) {
   document.getElementById('reprocessMeetingButton').hidden = !!meeting.is_fragment;
   const container = document.getElementById('speakerCards'); container.replaceChildren();
+  if (meeting.is_fragment) return;
   for (const profile of meeting.speakers || []) {
     const card = document.createElement('div'); card.className = 'speaker-card';
     const title = document.createElement('strong'); title.textContent = profile.label;
@@ -520,4 +528,61 @@ function renderSpeakerCards(meeting) {
     }
     container.appendChild(card);
   }
+}
+
+function updateProtocolScope(meeting) {
+  const fragment = !!meeting.is_fragment;
+  const button = document.getElementById('fullProtocolButton'); button.hidden = !fragment;
+  button.title = 'Протокол, поручения и ключевые моменты по всему исходному аудио';
+  document.getElementById('protocolScope').textContent = fragment
+    ? (meeting.full_state === 'done' ? 'Отрывок для прослушивания · полный протокол готов'
+      : meeting.full_state === 'error' ? 'Ошибка обработки исходного аудио: ' + meeting.full_error
+      : meeting.full_job_id ? 'Исходный файл распознаётся целиком. Итоговые поручения появятся после завершения.'
+      : 'Живая запись. Для итоговых поручений завершите запись кнопкой «Сохранить и обработать».')
+    : 'Полное исходное аудио · поручения, ключевые моменты и саммари по всей записи';
+}
+
+async function openFullProtocol(tab = 'transcript') {
+  const selected = currentMeetingData;
+  if (!selected) return false;
+  if (!selected.is_fragment) { switchTab(tab); return true; }
+  const version = selectionVersion;
+  try {
+    const fragment = await callApi('get_meeting', {id: selected.id});
+    if (version !== selectionVersion) return false;
+    if (!fragment.full_meeting_id) {
+      Object.assign(selected, fragment); updateProtocolScope(selected);
+      updateAiThought(document.getElementById('protocolScope').textContent);
+      return false;
+    }
+    await openDemoMeeting(fragment.full_meeting_id, 'history');
+    if (currentMeetingData?.id !== fragment.full_meeting_id) return false;
+    switchTab(tab); return true;
+  } catch (error) { updateAiThought(error.message); return false; }
+}
+
+function editSpeakerInline(bubble, key) {
+  if (bubble.querySelector('.speaker-name-editor')) return;
+  const meeting = currentMeetingData;
+  const profile = meeting.speakers.find(p => p.id === key);
+  const version = selectionVersion;
+  const form = document.createElement('form'); form.className = 'speaker-name-editor';
+  const input = document.createElement('input'); input.value = profile.name || ''; input.placeholder = profile.label; input.maxLength = 120;
+  input.setAttribute('aria-label', 'Имя говорящего');
+  const save = document.createElement('button'); save.type = 'submit'; save.textContent = 'Сохранить';
+  const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = 'Отмена'; cancel.onclick = () => form.remove();
+  form.append(input, save, cancel); bubble.querySelector('.chat-header').after(form);
+  input.onkeydown = event => { if (event.key === 'Escape') form.remove(); };
+  form.onsubmit = async event => {
+    event.preventDefault(); save.disabled = true;
+    try {
+      const result = await callApi('update_speaker_name', {meeting_id: meeting.id, speaker_id: key, name: input.value});
+      if (version === selectionVersion && currentMeetingData?.id === meeting.id) {
+        currentMeetingData = result; renderTranscript(result.dialogue || []); renderSpeakerCards(result);
+        renderTasksTable(result.tasks || []); renderSummary(result);
+        updateAiThought('Имя обновлено во всех репликах этого голоса и связанных поручениях.');
+      }
+    } catch (error) { updateAiThought(error.message); save.disabled = false; }
+  };
+  input.focus(); input.select();
 }
