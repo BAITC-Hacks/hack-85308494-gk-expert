@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>QazaqProtocol AI — OBS Studio Style</title>
   <link rel="stylesheet" href="style.css">
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <link rel="stylesheet" href="vendor/fontawesome/css/all.min.css">
 </head>
 <body>
 
@@ -118,11 +118,9 @@
       <div class="obs-panel obs-transitions">
         <div class="obs-panel-header">Обработка ИИ <i class="fa-solid fa-window-restore"></i></div>
         <div class="obs-panel-content">
-          <label style="font-size:11px;color:var(--obs-text-dim)">Движок:</label>
+          <label style="font-size:11px;color:var(--obs-text-dim)">Контур обработки ИИ:</label>
           <select id="engineSelect" onchange="onEngineChange()">
-            <option value="gpt-4o" selected>OpenAI GPT-4o</option>
-            <option value="codex-astra">Codex Astra</option>
-            <option value="offline">Offline Rule Engine</option>
+            <option value="offline" selected>🔒 On-Premise (Faster-Whisper + Локальный NLP)</option>
           </select>
           
           <label style="font-size:11px;color:var(--obs-text-dim)">Компания:</label>
@@ -310,11 +308,15 @@
 
 <div class="modal-overlay" id="settingsModal" style="display:none">
   <div class="modal-box">
-    <div class="modal-header">Настройки <button class="modal-close" onclick="closeSettingsModal()">&times;</button></div>
+    <div class="modal-header">Настройки системы <button class="modal-close" onclick="closeSettingsModal()">&times;</button></div>
     <div class="modal-body">
-      <input type="password" id="settingsApiKey" placeholder="API Key">
-      <textarea id="settingsPrompt" rows="3" placeholder="Глоссарий"></textarea>
-      <input type="text" id="settingsCompany" placeholder="Название организации / компании">
+      <label style="font-size:12px;color:var(--obs-text-dim);margin-bottom:4px;display:block;">Организация по умолчанию:</label>
+      <input type="text" id="settingsCompany" placeholder="Название организации (например: АО «Самрук-Қазына Өңдеу»)">
+      <label style="font-size:12px;color:var(--obs-text-dim);margin:8px 0 4px;display:block;">Отраслевой глоссарий терминов:</label>
+      <textarea id="settingsPrompt" rows="3" placeholder="Ключевые термины (ПХЗ, KPI, ТБ, смета, ПНР, шала-қазақша)..."></textarea>
+      <div style="margin-top:10px;padding:8px;background:rgba(0,214,79,0.1);border:1px solid #00d64f;border-radius:4px;font-size:11px;color:#00d64f;">
+        <i class="fa-solid fa-shield-halved"></i> Контур безопасности: Автономная локальная обработка (Faster-Whisper + On-Premise NLP). Передача во внешние API отключена.
+      </div>
     </div>
     <div class="modal-footer">
       <button class="btn-secondary" onclick="closeSettingsModal()">Отмена</button>

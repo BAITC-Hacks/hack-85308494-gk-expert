@@ -147,7 +147,7 @@ class ProtocolApiBridge:
 
     def stop_and_process(self, params=None):
         params = params or {}
-        model = params.get("model", "gpt-4o")
+        model = params.get("model", "offline")
 
         # 1. Stop recording (returns master, mic, sys files)
         rec_files = self.recorder.stop_recording()
@@ -182,7 +182,7 @@ class ProtocolApiBridge:
 
         return {"meeting": meeting}
 
-    def process_existing_audio(self, filepath: str, model: str = "gpt-4o"):
+    def process_existing_audio(self, filepath: str, model: str = "offline"):
         if not os.path.exists(filepath):
             raise FileNotFoundError(f"File not found: {filepath}")
 
@@ -270,13 +270,15 @@ class ProtocolApiBridge:
         return {"filepath": os.path.abspath(path)}
 
     def save_settings(self, params):
-        api_key = params.get("api_key")
-        if api_key:
-            self.api_key = api_key
-            self.stt.set_api_key(api_key)
-            self.nlp.set_api_key(api_key)
+        company = params.get("company", "").strip()
+        prompt = params.get("prompt", "").strip()
+        if company:
+            os.environ["DEFAULT_COMPANY"] = company
+        try:
             with open(ENV_PATH, "w", encoding="utf-8") as f:
-                f.write(f"OPENAI_API_KEY={api_key}\nPORT=8000\n")
+                f.write(f"PORT=8000\nDEFAULT_COMPANY={company or 'Организация'}\nSTT_OFFLINE=1\n")
+        except Exception:
+            pass
         return {"success": True}
 
 

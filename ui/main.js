@@ -998,14 +998,7 @@ function updateAiThought(thought) {
 }
 
 function onEngineChange() {
-  const eng = document.getElementById('engineSelect').value;
-  if (eng === 'codex-astra') {
-    updateAiThought("Подключен локальный агент Codex с моделью Astra для извлечения поручений.");
-  } else if (eng === 'offline') {
-    updateAiThought("Активирован On-Premise автономный контур (работа без интернета).");
-  } else {
-    updateAiThought("Выбран высокоточный движок OpenAI GPT-4o & Whisper.");
-  }
+  updateAiThought("Активирован On-Premise автономный контур (Faster-Whisper + локальный NLP-экстрактор).");
 }
 
 function openSettingsModal() {
@@ -1017,11 +1010,10 @@ function closeSettingsModal() {
 }
 
 async function saveSettings() {
-  const apiKey = document.getElementById('settingsApiKey').value.trim();
-  if (apiKey) {
-    await callApi('save_settings', { api_key: apiKey });
-    updateAiThought("Настройки успешно сохранены в .env файл.");
-  }
+  const company = document.getElementById('settingsCompany') ? document.getElementById('settingsCompany').value.trim() : '';
+  const prompt = document.getElementById('settingsPrompt') ? document.getElementById('settingsPrompt').value.trim() : '';
+  await callApi('save_settings', { company, prompt });
+  updateAiThought("Настройки организации успешно сохранены в локальный конфигуратор.");
   closeSettingsModal();
 }
 

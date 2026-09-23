@@ -19,8 +19,6 @@ class SpeechToTextEngine:
     )
 
     def __init__(self, api_key: Optional[str] = None, *, model_dir: Optional[str] = None):
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
-        self._explicit_model_dir = model_dir is not None
         base_dir = (
             Path(sys.executable).resolve().parent
             if getattr(sys, "frozen", False)
@@ -34,7 +32,8 @@ class SpeechToTextEngine:
         self._lock = threading.Lock()
 
     def set_api_key(self, api_key: str):
-        self.api_key = api_key
+        """Compatibility hook; API keys never enable network processing."""
+        return None
 
     def _load_model(self):
         if self._model is not None:
@@ -67,16 +66,6 @@ class SpeechToTextEngine:
         return model
 
     def transcribe(self, audio_file_path: str, custom_prompt: Optional[str] = None, language: Optional[str] = None) -> Dict:
-        """Transcribe audio locally if model is available, or via cloud API if configured."""
-        try:
-            return self._transcribe_local(audio_file_path, custom_prompt, language)
-        except (RuntimeError, ImportError) as local_err:
-            if self._explicit_model_dir or os.getenv("STT_OFFLINE") == "1" or not self.api_key:
-                raise local_err
-            print(f"[STT] Local model unavailable ({local_err}), using OpenAI Whisper API...")
-            return self._transcribe_cloud(audio_file_path, custom_prompt, language)
-
-    def _transcribe_local(self, audio_file_path: str, custom_prompt: Optional[str] = None, language: Optional[str] = None) -> Dict:
         """Return the existing transcript schema using only a local model."""
         audio_path = Path(audio_file_path)
         if not audio_path.is_file():
@@ -127,41 +116,5 @@ class SpeechToTextEngine:
             "file_size": file_size,
             "engine": "faster-whisper-local",
             "processing_location": "local",
-            "diarization": "not_performed",
-        }
-
-    def _transcribe_cloud(self, audio_file_path: str, custom_prompt: Optional[str] = None, language: Optional[str] = None) -> Dict:
-        """Fallback transcription via OpenAI Whisper API when local weights are not installed."""
-        from openai import OpenAI
-        import json
-        client = OpenAI(api_key=self.api_key)
-        prompt = custom_prompt or self.DEFAULT_PROMPT
-        with open(audio_file_path, "rb") as f:
-            transcription = client.audio.transcriptions.create(
-                model="whisper-1",
-                file=f,
-                response_format="verbose_json",
-                prompt=prompt,
-                language=language if language and language != "auto" else None
-            )
-        data = transcription.model_dump() if hasattr(transcription, "model_dump") else json.loads(transcription)
-        segments = []
-        for s in data.get("segments", []):
-            segments.append({
-                "id": s.get("id"),
-                "start": round(s.get("start", 0.0), 2),
-                "end": round(s.get("end", 0.0), 2),
-                "text": s.get("text", "").strip(),
-                "duration": round(s.get("end", 0.0) - s.get("start", 0.0), 2)
-            })
-        return {
-            "text": data.get("text", "").strip(),
-            "duration": round(data.get("duration", 0.0), 2),
-            "language": data.get("language", "ru"),
-            "segments": segments,
-            "filename": os.path.basename(audio_file_path),
-            "file_size": os.path.getsize(audio_file_path),
-            "engine": "openai-whisper-cloud",
-            "processing_location": "cloud",
             "diarization": "not_performed",
         }
