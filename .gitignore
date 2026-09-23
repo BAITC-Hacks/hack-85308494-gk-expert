@@ -10,3 +10,15 @@ models/
 sound/
 storage/
 *.log
+
+# Android local files
+.gradle/
+.dart_tool/
+.cxx/
+.externalNativeBuild/
+local.properties
+key.properties
+*.jks
+*.keystore
+*.apk
+*.aab

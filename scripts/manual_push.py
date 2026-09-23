@@ -3,6 +3,7 @@ import argparse
 import ast
 from datetime import datetime
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -47,6 +48,15 @@ def main():
     paths += [ROOT / 'scripts' / 'manual_push.py']
     paths += [ROOT / 'scripts' / 'prepare_speaker_models.py']
     paths += [ROOT / 'ui' / 'assets' / 'fonts' / 'OFL-Manrope.txt']
+    # Include Android sources, pruning local caches, build output and signing material.
+    for directory, folders, files in os.walk(ROOT / 'android'):
+        folders[:] = [name for name in folders if name not in {
+            '.git', '.gradle', '.idea', '.dart_tool', '.cxx', '.externalNativeBuild',
+            'build', 'dist', 'node_modules', '__pycache__', '.venv'}]
+        paths += [Path(directory) / name for name in files
+                  if name not in {'local.properties', 'key.properties', '.DS_Store'}
+                  and (not name.startswith('.env') or name == '.env.example')
+                  and Path(name).suffix.lower() not in {'.jks', '.keystore', '.p12', '.pfx', '.apk', '.aab', '.log'}]
     payloads = {}
     for path in paths:
         if path.is_symlink() or not path.resolve().is_relative_to(ROOT):
@@ -59,6 +69,7 @@ def main():
         payloads[path.relative_to(ROOT).as_posix()] = data
     payloads['.gitignore'] = b'.env\n.env.*\n!.env.example\n.venv/\n__pycache__/\n*.py[cod]\nbuild/\ndist/\nmodels/\nsound/\nstorage/\n*.log\n'
     payloads['.env.example'] = b'PORT=8000\nSTT_MODEL_DIR=models/whisper-small\nSTT_DEVICE=cpu\nSTT_COMPUTE_TYPE=int8\n'
+    payloads['.gitignore'] += b'\n# Android local files\n.gradle/\n.dart_tool/\n.cxx/\n.externalNativeBuild/\nlocal.properties\nkey.properties\n*.jks\n*.keystore\n*.apk\n*.aab\n'
     for name, data in payloads.items():
         destination = PUBLISH / name
         destination.parent.mkdir(parents=True, exist_ok=True)

@@ -1,0 +1,11 @@
+<resources>
+    <color name="samruk_blue">#003366</color>
+    <color name="samruk_blue_dark">#002244</color>
+    <color name="samruk_gold">#D4AF37</color>
+    <color name="bg_dark">#121316</color>
+    <color name="bg_card">#1E2128</color>
+    <color name="text_white">#F3F4F6</color>
+    <color name="accent_red">#EF4444</color>
+    <color name="accent_green">#10B981</color>
+    <color name="accent_orange">#F59E0B</color>
+</resources>

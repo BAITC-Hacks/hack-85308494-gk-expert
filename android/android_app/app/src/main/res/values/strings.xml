@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">Транскрипт</string>
+    <string name="tab_record">Диктофон</string>
+    <string name="tab_tasks">Поручения</string>
+    <string name="tab_summary">Саммари</string>
+    <string name="btn_start_record">Начать запись совещания</string>
+    <string name="btn_stop_record">Остановить и обработать</string>
+    <string name="server_url">http://10.0.2.2:8000</string>
+</resources>
