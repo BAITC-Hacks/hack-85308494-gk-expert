@@ -13,7 +13,7 @@ PUBLISH = Path.home() / 'codex-antigravity-coordination' / 'publish-repo'
 REMOTE = 'https://github.com/BAITC-Hacks/hack-85308494-gk-expert.git'
 SECRET = re.compile(rb'sk-[A-Za-z0-9_-]{20,}|gh[opusr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|-----BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY-----')
 ROOT_FILES = ('app.py', 'requirements.txt', 'requirements-local-stt.txt', 'run_app.bat', 'build.bat',
-              'build_portable.py', 'QazaqProtocolLocal.spec', 'README.md', 'LOCAL_STT.md', 'RUN_LOCAL.md', 'push_to_git.bat')
+              'build_portable.py', 'QazaqProtocolLocal.spec', 'README.md', 'LOCAL_STT.md', 'RUN_LOCAL.md', 'VERIFICATION.md', 'push_to_git.bat')
 TEST_FILES = ('test_audio_lifecycle.py', 'test_audio_mixing.py', 'test_stt_offline.py',
               'test_nlp_local.py', 'test_document_local.py', 'test_upload_api.py',
               'test_audio_pipeline.py', 'test_save_dialog.py', 'test_speaker_engine.py', 'test_speaker_context.py')
