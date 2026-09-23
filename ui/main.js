@@ -21,20 +21,37 @@ let latestAudioLevel = 0;
 
 // Unified API Caller (pywebview or REST API)
 async function callApi(method, params = {}) {
-  if (window.pywebview && window.pywebview.api && typeof window.pywebview.api[method] === 'function') {
-    return await window.pywebview.api[method](params);
-  }
-  try {
-    const res = await fetch(`/api/${method}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(params)
+  let result;
+  if (window.pywebview?.api && typeof window.pywebview.api[method] === 'function') {
+    result = await window.pywebview.api[method](params);
+  } else {
+    const response = await fetch(`/api/${method}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(params)
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.json();
-  } catch (err) {
-    console.warn(`API call ${method} fallback error:`, err);
-    throw err;
+    result = await response.json();
+    if (!response.ok && !result?.error) throw new Error(`HTTP ${response.status}`);
+  }
+  if (result?.error) throw new Error(result.error);
+  return result;
+}
+
+let isProcessing = false;
+let processingPoll = null;
+function setProcessing(active) {
+  isProcessing = active;
+  document.body.classList.toggle('processing', active);
+  document.getElementById('btnStartRec').disabled = active;
+  document.getElementById('btnStopRec').disabled = active || !isRecording;
+  document.getElementById('audioFileInput').disabled = active;
+  if (processingPoll) clearInterval(processingPoll);
+  if (active) {
+    const started = Date.now();
+    processingPoll = setInterval(async () => {
+      try {
+        const state = await callApi('get_processing_status');
+        if (state.busy) updateAiThought(`${state.stage} ? ${Math.floor((Date.now() - started) / 1000)} ?`);
+      } catch (_) { /* The main request displays connection failures. */ }
+    }, 1000);
   }
 }
 
@@ -47,9 +64,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   loadCompanies();
   loadHistoryList();
 
-  setTimeout(() => {
-    openDemoMeeting('meeting_01');
-  }, 300);
+  updateAiThought("Загрузите аудио или начните запись. Обработка выполняется на этом компьютере.");
 });
 
 window.addEventListener('pywebviewready', () => {
@@ -67,7 +82,7 @@ async function loadCompanies() {
     if (comps && comps.length > 0) {
       companiesList = comps;
       const select = document.getElementById('companyFilterSelect');
-      select.innerHTML = '<option value="all">🏢 Все компании холдинга</option>';
+      select.innerHTML = '<option value="all">🏢 Все организации</option>';
       comps.forEach(c => {
         const opt = document.createElement('option');
         opt.value = c.id;
@@ -87,7 +102,7 @@ function onCompanyFilterChange() {
     const comp = companiesList.find(c => c.id === currentCompanyFilter);
     updateAiThought(`Фильтр по компании: ${comp ? comp.name : currentCompanyFilter}`);
   } else {
-    updateAiThought("Отображаются совещания всех компаний холдинга.");
+    updateAiThought("Отображаются совещания всех организаций.");
   }
 }
 
@@ -163,7 +178,16 @@ async function selectScreenShare() {
 // --------------------------------------------------------------------------
 // AUDIO DEVICES & OBS VU-METERS
 // --------------------------------------------------------------------------
+let devicesLoadPromise = null;
+let devicesLoaded = false;
 async function initAudioDevices() {
+  if (devicesLoaded) return;
+  if (devicesLoadPromise) return devicesLoadPromise;
+  devicesLoadPromise = populateAudioDevices();
+  try { await devicesLoadPromise; } finally { devicesLoadPromise = null; }
+}
+
+async function populateAudioDevices() {
   try {
     const data = await callApi('get_audio_devices');
     const loopSelect = document.getElementById('loopbackDeviceSelect');
@@ -213,7 +237,9 @@ async function initAudioDevices() {
       opt.textContent = 'Основной микрофон системы';
       micSelect.appendChild(opt);
     }
+    devicesLoaded = true;
   } catch (e) {
+    updateAiThought('Не удалось получить аудиоустройства: ' + e.message + '. Загрузка аудиофайлов доступна.');
     console.error("Failed to load audio devices:", e);
   }
 }
@@ -243,6 +269,7 @@ async function toggleRecording() {
   const recBadge = document.getElementById('recBadge');
   const statusPill = document.getElementById('liveStatusPill');
 
+  if (isProcessing) return;
   if (!isRecording) {
     const trackMode = document.getElementById('audioTrackSelect').value;
     const micVal = document.getElementById('micDeviceSelect').value;
@@ -255,6 +282,7 @@ async function toggleRecording() {
       await callApi('start_recording', { mode: trackMode, mic_index: micIndex, loopback_index: loopIndex });
 
       isRecording = true;
+      document.getElementById('btnStopRec').disabled = false;
       isPaused = false;
       btn.classList.add('recording-active');
       btnText.textContent = "ОСТАНОВИТЬ И ОБРАБОТАТЬ";
@@ -269,6 +297,7 @@ async function toggleRecording() {
       alert("Ошибка запуска записи: " + err.message);
     }
   } else {
+    setProcessing(true);
     btn.disabled = true;
     btnText.textContent = "СВЕДЕНИЕ И АНАЛИЗ ИИ...";
     pauseBtn.disabled = true;
@@ -277,12 +306,13 @@ async function toggleRecording() {
     statusPill.style.color = '#3b82f6';
     stopVuPolling();
 
-    updateAiThought("Сведение аудиодорожек. Запуск распознавания Whisper, диаризации и извлечения ключевых моментов...");
+    updateAiThought("Сведение аудиодорожек. Локальное распознавание речи и выделение поручений...");
 
     try {
       const selectedEngine = document.getElementById('engineSelect') ? document.getElementById('engineSelect').value : 'offline';
       const result = await callApi('stop_and_process', { model: selectedEngine });
       isRecording = false;
+      setProcessing(false);
       btn.classList.remove('recording-active');
       btn.disabled = false;
       btnText.textContent = "НАЧАТЬ ЗАПИСЬ СОВЕЩАНИЯ";
@@ -296,6 +326,7 @@ async function toggleRecording() {
       }
     } catch (err) {
       isRecording = false;
+      setProcessing(false);
       isPaused = false;
       btn.classList.remove('recording-active');
       btn.disabled = false;
@@ -419,12 +450,14 @@ function startWaveformAnimation() {
 // FILE IMPORT & DEMOS
 // --------------------------------------------------------------------------
 function triggerFileInput() {
+  if (isRecording || isProcessing) { updateAiThought("Сначала завершите текущую запись или обработку."); return; }
   document.getElementById('audioFileInput').click();
 }
 
 async function handleFileSelected(event) {
   const file = event.target.files[0];
-  if (!file) return;
+  if (!file || isProcessing || isRecording) return;
+  setProcessing(true);
 
   updateAiThought(`Загружен файл '${file.name}'. Начинаю анализ...`);
   const statusPill = document.getElementById('liveStatusPill');
@@ -455,6 +488,8 @@ async function handleFileSelected(event) {
     console.error(err);
     alert("Ошибка обработки файла: " + err.message);
   } finally {
+    setProcessing(false);
+    event.target.value = '';
     statusPill.innerHTML = '<span class="dot"></span> Готов';
     statusPill.style.color = '#10b981';
   }
@@ -478,10 +513,12 @@ async function openDemoMeeting(meetingId) {
 // --------------------------------------------------------------------------
 function renderMeeting(m) {
   currentMeetingData = m;
+  document.getElementById('protocolPanel').classList.add('open');
+  document.getElementById('protocolWarnings').textContent = (m.warnings || []).join(' ');
 
   // Header meta & Company tag
   document.getElementById('currentMeetingTitle').textContent = m.title || "Совещание";
-  document.getElementById('metaCompanyTag').textContent = m.company || 'АО «Самрук-Қазына Өңдеу»';
+  document.getElementById('metaCompanyTag').textContent = m.company || 'Организация';
   document.getElementById('metaDate').innerHTML = `<i class="fa-regular fa-calendar"></i> ${m.date || 'Текущая дата'}`;
   document.getElementById('metaLeader').innerHTML = `<i class="fa-solid fa-user-tie"></i> ${m.leader || 'Председатель'}`;
   
@@ -503,6 +540,7 @@ function renderMeeting(m) {
   renderSummary(m);
   renderTranscript(m.dialogue || []);
   renderSedCard(m);
+  switchTab('transcript');
 }
 
 // --------------------------------------------------------------------------
@@ -975,6 +1013,7 @@ async function loadHistoryList() {
       `;
       container.appendChild(el);
     });
+    if (!currentMeetingData && filtered.length > 0) await openDemoMeeting(filtered[0].id);
   } catch (e) {
     console.error("Failed to load history list:", e);
   }
@@ -987,9 +1026,18 @@ function switchTab(tabName) {
   document.querySelectorAll('.protocol-tabs button').forEach(b => b.classList.remove('active'));
   document.querySelectorAll('.tab-pane').forEach(c => c.classList.remove('active'));
 
-  event.currentTarget.classList.add('active');
+  const tabNames = ['tasks', 'moments', 'notes', 'summary', 'transcript', 'sed'];
+  document.querySelectorAll('.protocol-tabs button')[tabNames.indexOf(tabName)]?.classList.add('active');
   const target = document.getElementById('tabContent' + tabName.charAt(0).toUpperCase() + tabName.slice(1));
   if (target) target.classList.add('active');
+}
+
+async function exportTranscript() {
+  if (!currentMeetingData) { updateAiThought('Сначала загрузите аудио или выберите совещание.'); return; }
+  try {
+    const result = await callApi('export_transcript', { meeting_id: currentMeetingData.id });
+    alert('Стенограмма сохранена:\n' + result.filepath);
+  } catch (err) { updateAiThought(err.message); }
 }
 
 function updateAiThought(thought) {
@@ -1001,7 +1049,13 @@ function onEngineChange() {
   updateAiThought("Активирован On-Premise автономный контур (Faster-Whisper + локальный NLP-экстрактор).");
 }
 
-function openSettingsModal() {
+async function openSettingsModal() {
+  try {
+    const settings = await callApi('get_settings');
+    document.getElementById('settingsCompany').value = settings.company || '';
+    document.getElementById('settingsPrompt').value = settings.prompt || '';
+    document.getElementById('settingsLanguage').value = settings.language || 'auto';
+  } catch (err) { updateAiThought(err.message); }
   document.getElementById('settingsModal').style.display = 'flex';
 }
 
@@ -1012,7 +1066,7 @@ function closeSettingsModal() {
 async function saveSettings() {
   const company = document.getElementById('settingsCompany') ? document.getElementById('settingsCompany').value.trim() : '';
   const prompt = document.getElementById('settingsPrompt') ? document.getElementById('settingsPrompt').value.trim() : '';
-  await callApi('save_settings', { company, prompt });
+  await callApi('save_settings', { company, prompt, language: document.getElementById('settingsLanguage').value });
   updateAiThought("Настройки организации успешно сохранены в локальный конфигуратор.");
   closeSettingsModal();
 }

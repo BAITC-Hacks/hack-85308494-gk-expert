@@ -149,6 +149,7 @@
     <div class="obs-panel">
       <div class="obs-panel-header">Управление <i class="fa-solid fa-window-restore"></i></div>
       <div class="obs-panel-content controls-stack">
+        <p style="font-size:11px;color:var(--obs-text-dim)">Перед записью уведомите участников. Звук браузера и конференций записывается через системное аудио; выбор окна необязателен.</p>
         <button id="btnStartRec" onclick="toggleRecording()"><i class="fa-solid fa-play"></i> <span id="btnRecordText">Начать запись</span></button>
         <button id="btnStopRec" onclick="toggleRecording()" disabled><i class="fa-solid fa-stop"></i> Остановить и обработать</button>
         <button id="btnPauseRec" onclick="togglePauseRecording()" disabled><i class="fa-solid fa-pause"></i> Пауза</button>
@@ -156,7 +157,7 @@
         <div class="obs-separator"></div>
         <button onclick="toggleProtocolPanel()"><i class="fa-solid fa-clipboard-list"></i> Открыть протокол</button>
         <button onclick="triggerFileInput()"><i class="fa-solid fa-upload"></i> Загрузить аудио</button>
-        <button id="btnSelectWindow" onclick="selectScreenShare()"><i class="fa-solid fa-display"></i> Окно Zoom/Discord</button>
+        <button id="btnSelectWindow" onclick="selectScreenShare()"><i class="fa-solid fa-display"></i> Предпросмотр экрана</button>
         
         <div class="obs-separator"></div>
         <button onclick="exportDocx()"><i class="fa-solid fa-file-word" style="color:#2b579a"></i> Экспорт Word</button>
@@ -183,7 +184,7 @@
 </div>
 
 <!-- Hidden File Input -->
-<input type="file" id="audioFileInput" accept=".mp3,.wav,.m4a,.ogg" style="display:none" onchange="handleFileSelected(event)">
+<input type="file" id="audioFileInput" accept=".mp3,.wav,.m4a,.ogg,.flac,.webm,.mp4" style="display:none" onchange="handleFileSelected(event)">
 
 <!-- PROTOCOL SLIDE-OUT PANEL -->
 <div class="protocol-overlay" id="protocolPanel">
@@ -210,6 +211,7 @@
   </div>
   
   <div class="protocol-content-area">
+    <div id="protocolWarnings" class="protocol-warning"></div>
     <!-- Tasks Tab -->
     <div id="tabContentTasks" class="tab-pane active">
       <div style="margin-bottom:15px;display:flex;gap:10px;">
@@ -273,6 +275,7 @@
 
     <!-- Transcript Tab -->
     <div id="tabContentTranscript" class="tab-pane">
+      <button onclick="exportTranscript()" style="margin-bottom:12px">Сохранить стенограмму TXT</button>
       <input type="text" id="transcriptSearch" placeholder="Поиск по стенограмме..." oninput="filterTranscript()" style="margin-bottom:15px;">
       <div id="dialogueChat" style="display:flex;flex-direction:column;gap:15px;"></div>
     </div>
@@ -311,6 +314,7 @@
     <div class="modal-header">Настройки системы <button class="modal-close" onclick="closeSettingsModal()">&times;</button></div>
     <div class="modal-body">
       <label style="font-size:12px;color:var(--obs-text-dim);margin-bottom:4px;display:block;">Организация по умолчанию:</label>
+      <label for="settingsLanguage">Язык распознавания</label><select id="settingsLanguage"><option value="auto">Авто / смешанная речь</option><option value="ru">Русский</option><option value="kk">Қазақша</option></select>
       <input type="text" id="settingsCompany" placeholder="Название организации (например: АО «Самрук-Қазына Өңдеу»)">
       <label style="font-size:12px;color:var(--obs-text-dim);margin:8px 0 4px;display:block;">Отраслевой глоссарий терминов:</label>
       <textarea id="settingsPrompt" rows="3" placeholder="Ключевые термины (ПХЗ, KPI, ТБ, смета, ПНР, шала-қазақша)..."></textarea>

@@ -4,6 +4,8 @@ import struct
 import sys
 import tempfile
 import time
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -186,6 +188,35 @@ class TestAudioLifecycle(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.recorder.start_recording('invalid')
         self.factory.assert_not_called()
+
+    def test_parallel_gui_and_http_device_enumeration_never_overlap(self):
+        # Simulate native initialization releasing the GIL. Previously the two
+        # UI ready events could enter PortAudio initialization simultaneously.
+        entered = 0
+        maximum = 0
+        guard = threading.Lock()
+
+        def create_audio():
+            nonlocal entered, maximum
+            with guard:
+                entered += 1
+                maximum = max(maximum, entered)
+            time.sleep(0.02)
+            instance = FakeAudio()
+
+            def terminate():
+                nonlocal entered
+                with guard:
+                    entered -= 1
+            instance.terminate = terminate
+            return instance
+
+        self.factory.side_effect = create_audio
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            results = list(pool.map(lambda _: self.recorder.get_audio_devices(), range(16)))
+        self.assertEqual(maximum, 1)
+        self.assertEqual(entered, 0)
+        self.assertTrue(all(len(result['microphones']) == 1 for result in results))
 
 
 if __name__ == '__main__':

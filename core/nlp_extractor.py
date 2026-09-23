@@ -44,6 +44,9 @@ class NLPExtractor:
     def set_api_key(self, api_key: str):
         pass
 
+    def _offline_fallback_extractor(self, transcript_data: Dict) -> Dict:
+        return self.process_transcript(transcript_data)
+
     @classmethod
     def _assignee(cls, text, speaker):
         patterns = (

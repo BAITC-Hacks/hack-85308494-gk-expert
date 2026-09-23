@@ -5,6 +5,7 @@ import struct
 import wave
 import threading
 import uuid
+from functools import wraps
 from typing import List, Dict, Optional
 
 try:
@@ -14,6 +15,19 @@ except ImportError:
         import pyaudio
     except ImportError:
         pyaudio = None
+
+
+# PortAudio has process-global initialization/device tables. HTTP handlers and
+# pywebview callbacks run on different threads, so serialize native API calls.
+_PORTAUDIO_LOCK = threading.RLock()
+
+
+def _serialized_audio_call(function):
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        with _PORTAUDIO_LOCK:
+            return function(*args, **kwargs)
+    return wrapped
 
 
 class AudioRecorder:
@@ -59,6 +73,7 @@ class AudioRecorder:
         self._pause_started = None
         self._level_updated = {"mic_level": 0.0, "system_level": 0.0}
 
+    @_serialized_audio_call
     def get_audio_devices(self) -> Dict[str, List[Dict]]:
         """Enumerate all input and loopback audio devices on Windows."""
         input_devices = []
@@ -281,7 +296,8 @@ class AudioRecorder:
             return callback
 
         try:
-            audio = pyaudio.PyAudio()
+            with _PORTAUDIO_LOCK:
+                audio = pyaudio.PyAudio()
             requested = []
             if mode in ("mic", "mix"):
                 requested.append(("mic", mic_idx, self.mic_filename, "mic_level"))
@@ -289,7 +305,8 @@ class AudioRecorder:
                 requested.append(("sys", loop_idx, self.sys_filename, "system_level"))
 
             for kind, selected_index, filename, level in requested:
-                device = self._select_device(audio, kind, selected_index)
+                with _PORTAUDIO_LOCK:
+                    device = self._select_device(audio, kind, selected_index)
                 # Use the device's native rate, instead of forcing 16 kHz on a
                 # device that may reject it. The final mix resamples as needed.
                 track = {
@@ -302,16 +319,17 @@ class AudioRecorder:
                 }
                 tracks.append(track)
                 try:
-                    track["stream"] = audio.open(
-                        format=pyaudio.paInt16,
-                        channels=track["channels"],
-                        rate=track["rate"],
-                        input=True,
-                        input_device_index=int(device["index"]),
-                        frames_per_buffer=self.chunk_size,
-                        stream_callback=make_callback(track),
-                        start=False,
-                    )
+                    with _PORTAUDIO_LOCK:
+                        track["stream"] = audio.open(
+                            format=pyaudio.paInt16,
+                            channels=track["channels"],
+                            rate=track["rate"],
+                            input=True,
+                            input_device_index=int(device["index"]),
+                            frames_per_buffer=self.chunk_size,
+                            stream_callback=make_callback(track),
+                            start=False,
+                        )
                 except Exception as exc:
                     raise RuntimeError(f"Не удалось открыть {device.get('name', kind)}: {exc}") from exc
 
@@ -319,11 +337,14 @@ class AudioRecorder:
                 return
             self.start_time = time.monotonic()
             for track in tracks:
-                track["stream"].start_stream()
+                with _PORTAUDIO_LOCK:
+                    track["stream"].start_stream()
             self._startup_complete.set()
             while not self._stop_event.wait(0.05):
                 for track in tracks:
-                    if not track["stream"].is_active():
+                    with _PORTAUDIO_LOCK:
+                        active = track["stream"].is_active()
+                    if not active:
                         raise RuntimeError("Аудиоустройство остановило поток. Проверьте подключение выбранных источников.")
         except Exception as exc:
             self._last_error = str(exc)
@@ -335,11 +356,13 @@ class AudioRecorder:
                 stream = track["stream"]
                 if stream is not None:
                     try:
-                        stream.stop_stream()
+                        with _PORTAUDIO_LOCK:
+                            stream.stop_stream()
                     except Exception as exc:
                         self._last_error = self._last_error or f"Ошибка остановки аудиопотока: {exc}"
                     try:
-                        stream.close()
+                        with _PORTAUDIO_LOCK:
+                            stream.close()
                     except Exception as exc:
                         self._last_error = self._last_error or f"Ошибка закрытия аудиопотока: {exc}"
                 if track["frames"]:
@@ -353,7 +376,8 @@ class AudioRecorder:
                         self._last_error = self._last_error or f"Не удалось сохранить аудиозапись: {exc}"
             if audio is not None:
                 try:
-                    audio.terminate()
+                    with _PORTAUDIO_LOCK:
+                        audio.terminate()
                 except Exception as exc:
                     self._last_error = self._last_error or f"Ошибка освобождения аудиоустройства: {exc}"
             self.elapsed_time = self._elapsed_now()

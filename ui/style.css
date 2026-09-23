@@ -515,3 +515,10 @@ th {
   text-align: center;
   border-radius: 2px;
 }
+
+.protocol-warning { color: #e4c77d; background: #3d3522; padding: 12px; margin-bottom: 16px; border-radius: 6px; font-size: 12px; line-height: 1.5; }
+.protocol-warning:empty { display: none; }
+.processing #liveStatusPill { animation: processingPulse 1.5s ease-in-out infinite; }
+@keyframes processingPulse { 50% { opacity: .45; } }
+button:disabled { opacity: .45; cursor: default; }
+@media (prefers-reduced-motion: reduce) { .processing #liveStatusPill { animation: none; } }

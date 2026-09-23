@@ -1,5 +1,6 @@
 import os
 import time
+from xml.sax.saxutils import escape
 from typing import Dict, Optional
 from docx import Document
 from docx.shared import Inches, Pt, RGBColor
@@ -39,6 +40,7 @@ class ExportService:
                 pdfmetrics.registerFont(TTFont("Arial-Bold", font_bold_path))
                 self.pdf_font = "Arial"
                 self.pdf_font_bold = "Arial-Bold"
+                pdfmetrics.registerFontFamily("Arial", normal="Arial", bold="Arial-Bold", italic="Arial", boldItalic="Arial-Bold")
             else:
                 self.pdf_font = "Helvetica"
                 self.pdf_font_bold = "Helvetica-Bold"
@@ -107,7 +109,7 @@ class ExportService:
                 p_ag = doc.add_paragraph(f"{i}. {item}", style='List Number')
                 p_ag.paragraph_format.left_indent = Inches(0.25)
         else:
-            doc.add_paragraph("1. Текущие производственные вопросы и показатели подразделений.")
+            doc.add_paragraph("Повестка отдельно не указана в стенограмме.")
 
         # Participants
         p_part_title = doc.add_paragraph()
@@ -202,6 +204,12 @@ class ExportService:
                     for r in p.runs:
                         r.font.size = Pt(9.5)
 
+        for warning in protocol_data.get("warnings", []):
+            doc.add_paragraph(warning)
+        doc.add_heading("СТЕНОГРАММА", level=1)
+        for item in protocol_data.get("dialogue", []):
+            doc.add_paragraph(f"[{item.get('timestamp', '')}] {item.get('speaker', '')}: {item.get('text', '')}")
+
         # Signatures
         doc.add_paragraph().paragraph_format.space_before = Pt(20)
         p_sig = doc.add_paragraph()
@@ -213,10 +221,30 @@ class ExportService:
         print(f"[Export] DOCX protocol saved to: {output_path}")
         return output_path
 
+    def export_to_txt(self, protocol_data: Dict, filename: str) -> str:
+        output_path = os.path.join(self.output_dir, filename)
+        with open(output_path, "w", encoding="utf-8-sig") as stream:
+            stream.write(protocol_data.get("title", "Стенограмма") + "\n\n")
+            for item in protocol_data.get("dialogue", []):
+                stream.write(f"[{item.get('timestamp', '')}] {item.get('speaker', '')}: {item.get('text', '')}\n\n")
+            if not protocol_data.get("dialogue"):
+                stream.write(protocol_data.get("transcript", "Речь не обнаружена."))
+        return output_path
+
     def export_to_pdf(self, protocol_data: Dict, filename: Optional[str] = None) -> str:
         """
         Generate an official PDF meeting protocol.
         """
+        # Transcript text is data, never ReportLab XML/HTML markup.
+        def safe(value):
+            if isinstance(value, str):
+                return escape(value)
+            if isinstance(value, list):
+                return [safe(item) for item in value]
+            if isinstance(value, dict):
+                return {key: safe(item) for key, item in value.items()}
+            return value
+        protocol_data = safe(protocol_data)
         if not filename:
             timestamp = time.strftime("%Y%m%d_%H%M%S")
             filename = f"Протокол_совещания_{timestamp}.pdf"
@@ -362,8 +390,8 @@ class ExportService:
                 Paragraph(str(t.get("status", "В работе")), table_cell_style)
             ])
 
-        col_widths = [24, 210, 110, 65, 60, 55]
-        t_flowable = Table(table_data, colWidths=col_widths, repeatRows=1)
+        col_widths = [doc.width * ratio for ratio in (0.04, 0.34, 0.18, 0.16, 0.13, 0.15)]
+        t_flowable = Table(table_data, colWidths=col_widths, repeatRows=1, splitInRow=1)
         t_flowable.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#104B8C')),
             ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
@@ -382,6 +410,19 @@ class ExportService:
         story.append(Spacer(1, 6))
         story.append(Paragraph("<b>Секретарь совещания:</b>     ____________________ / Ответственный секретарь /", body_style))
 
+        story.append(Spacer(1, 12))
+        story.append(Paragraph("КРАТКОЕ РЕЗЮМЕ:", h2_style))
+        for block in protocol_data.get("summary", []):
+            for point in block.get("key_points", []):
+                story.append(Paragraph(point, body_style))
+                story.append(Spacer(1, 4))
+        for warning in protocol_data.get("warnings", []):
+            story.append(Paragraph(warning, body_style))
+        story.append(Spacer(1, 12))
+        story.append(Paragraph("СТЕНОГРАММА:", h2_style))
+        for item in protocol_data.get("dialogue", []):
+            story.append(Paragraph(f"[{item.get('timestamp', '')}] {item.get('speaker', '')}: {item.get('text', '')}", body_style))
+            story.append(Spacer(1, 5))
         doc.build(story)
         print(f"[Export] PDF protocol saved to: {output_path}")
         return output_path

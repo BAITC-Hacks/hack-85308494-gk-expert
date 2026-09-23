@@ -12,43 +12,8 @@ class CompanyGroupManager:
     - Real-time and post-meeting notes & memos linked to meetings and timestamps.
     """
 
-    DEFAULT_COMPANIES = [
-        {
-            "id": "sk_ondeu",
-            "name": "АО «Самрук-Қазына Өңдеу»",
-            "type": "Головная компания (Холдинг)",
-            "code": "SK-ONDEU",
-            "color": "#38bdf8"
-        },
-        {
-            "id": "pavlodar_plant",
-            "name": "ТОО «Павлодарский химический завод»",
-            "type": "Дочернее предприятие",
-            "code": "PCHZ",
-            "color": "#10b981"
-        },
-        {
-            "id": "atyrau_poly",
-            "name": "ТОО «KPI Inc. (Полимерный кластер)»",
-            "type": "Дочернее предприятие",
-            "code": "KPI",
-            "color": "#a855f7"
-        },
-        {
-            "id": "contractors_group",
-            "name": "Пул подрядчиков и проектных институтов",
-            "type": "Внешние контрагенты",
-            "code": "CONTRACT",
-            "color": "#f59e0b"
-        }
-    ]
-
-    DEFAULT_GROUPS = [
-        {"id": "grp_chem", "name": "Химическая промышленность", "company_id": "sk_ondeu"},
-        {"id": "grp_inv", "name": "Инвестиционный блок & ТЭО", "company_id": "sk_ondeu"},
-        {"id": "grp_safety", "name": "Охрана труда и промбезопасность", "company_id": "sk_ondeu"},
-        {"id": "grp_legal", "name": "Договорная и претензионная работа", "company_id": "sk_ondeu"}
-    ]
+    DEFAULT_COMPANIES = [{"id": "main_org", "name": "Организация", "type": "Организация", "code": "ORG", "color": "#38bdf8"}]
+    DEFAULT_GROUPS = [{"id": "general", "name": "Общие совещания", "company_id": "main_org"}]
 
     def __init__(self, data_dir: str = "storage"):
         self.data_dir = data_dir
