@@ -113,7 +113,7 @@ async function selectScreenShare() {
       screenStream = null;
       videoEl.style.display = 'none';
       canvasEl.style.display = 'block';
-      btn.innerHTML = '<i class="fa-solid fa-display"></i> Окно Zoom / Discord';
+      btn.innerHTML = '<i class="fa-solid fa-display"></i> Предпросмотр экрана';
       updateAiThought("Захват экрана отключен. Монитор переключен на визуализатор аудиопотока.");
       return;
     }
@@ -122,21 +122,24 @@ async function selectScreenShare() {
       video: { cursor: "always" },
       audio: false
     });
+    await prepareScreenAudio();
 
     videoEl.srcObject = screenStream;
     videoEl.style.display = 'block';
     canvasEl.style.display = 'none';
     btn.innerHTML = '<i class="fa-solid fa-stop"></i> Отключить захват';
-    updateAiThought("Видеозахват окна конференции активен (OBS Monitor). Звук конференции пишется аппаратно через WASAPI Loopback.");
+    updateAiThought("Экран выбран. Микрофон выключен; записывается только звук компьютера через WASAPI Loopback.");
 
     screenStream.getVideoTracks()[0].onended = () => {
       videoEl.style.display = 'none';
       canvasEl.style.display = 'block';
-      btn.innerHTML = '<i class="fa-solid fa-display"></i> Окно Zoom / Discord';
+      btn.innerHTML = '<i class="fa-solid fa-display"></i> Предпросмотр экрана';
       screenStream = null;
     };
   } catch (err) {
-    console.log("Screen share cancelled or not allowed:", err);
+    if (screenStream) screenStream.getTracks().forEach(track => track.stop());
+    screenStream = null;
+    updateAiThought(err.name === 'NotAllowedError' ? 'Выбор экрана отменён.' : 'Не удалось включить захват экрана: ' + err.message);
   }
 }
 

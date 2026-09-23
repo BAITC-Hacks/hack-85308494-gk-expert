@@ -46,6 +46,7 @@ def main():
     paths += [ROOT / 'tests' / name for name in TEST_FILES]
     paths += [ROOT / 'scripts' / 'manual_push.py']
     paths += [ROOT / 'scripts' / 'prepare_speaker_models.py']
+    paths += [ROOT / 'ui' / 'assets' / 'fonts' / 'OFL-Manrope.txt']
     payloads = {}
     for path in paths:
         if path.is_symlink() or not path.resolve().is_relative_to(ROOT):

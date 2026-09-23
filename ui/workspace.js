@@ -1,8 +1,11 @@
 /* Current session, explicit history, independent live/file workers and real playback FFT. */
 let workspaceTab = 'work';
 let streamView = 'live';
-let selectedSource = 'mic';
-const sourceState = {mic: {enabled: true, locked: false, visible: true}, sys: {enabled: true, locked: false, visible: true}};
+let selectedSource = 'sys';
+const sourceState = {mic: {enabled: false, locked: false, visible: true}, sys: {enabled: true, locked: false, visible: true}};
+let sourceRevision = 0;
+let activeSources = [];
+const inputLevels = {mic: 0, sys: 0};
 let selectedJobId = null;
 let lastLive = {state: 'idle', segments: []};
 let lastJob = null;
@@ -66,6 +69,9 @@ async function initWorkspace() {
   document.getElementById('protocolPanel').classList.remove('open');
   currentMeetingData = null;
   await initAudioDevices();
+  const audioStatus = await callApi('get_recording_status');
+  applySourceStatus(audioStatus);
+  selectSource('sys');
   loadCompanies();
   updateSourceControls();
   setupPlayer(document.getElementById('monitorAudio'));
@@ -128,6 +134,12 @@ function selectSource(source) {
   selectedSource = source;
   document.querySelectorAll('[data-source]').forEach(row => row.classList.toggle('selected', row.dataset.source === source));
 }
+function applySourceStatus(status) {
+  activeSources = status.active_sources || [];
+  for (const key of ['mic', 'sys']) {
+    if (typeof status.muted?.[key] === 'boolean') sourceState[key].enabled = !status.muted[key];
+  }
+}
 function updateSourceControls() {
   for (const key of ['mic', 'sys']) {
     const state = sourceState[key];
@@ -137,25 +149,53 @@ function updateSourceControls() {
     const eye = document.getElementById(key + 'Enabled');
     eye.setAttribute('aria-pressed', String(state.enabled));
     eye.innerHTML = `<i class="fa-solid fa-${state.enabled ? 'eye' : 'eye-slash'}"></i>`;
+    const absent = isRecording && !activeSources.includes(key) && !state.enabled;
+    eye.disabled = recordTransition || !!state.pending || absent;
+    const mixer = document.getElementById(key + 'MuteButton');
+    const label = key === 'mic' ? 'Микрофон' : 'Системный звук';
+    const action = absent ? `${label} выключен. Включите источник перед следующей записью.` : `${state.enabled ? 'Выключить' : 'Включить'} ${key === 'mic' ? 'микрофон' : 'системный звук'}`;
+    mixer.disabled = eye.disabled;
+    mixer.setAttribute('aria-pressed', String(!state.enabled));
+    mixer.setAttribute('aria-label', action); mixer.title = action; eye.title = action;
+    mixer.classList.toggle('is-muted', !state.enabled);
+    mixer.innerHTML = `<i class="fa-solid fa-${key === 'mic' ? (state.enabled ? 'microphone' : 'microphone-slash') : (state.enabled ? 'volume-high' : 'volume-xmark')}"></i><span>${state.enabled ? 'Включён' : 'Выключен'}</span>`;
+    mixer.closest('.mixer-channel').classList.toggle('is-muted', !state.enabled);
     const lock = document.getElementById(key + 'Locked');
     lock.setAttribute('aria-pressed', String(state.locked));
     lock.innerHTML = `<i class="fa-solid fa-${state.locked ? 'lock' : 'lock-open'}"></i>`;
     document.getElementById(key === 'mic' ? 'micDeviceSelect' : 'loopbackDeviceSelect').disabled = state.locked || isRecording;
   }
   document.getElementById('sourceStateLabel').textContent = isRecording ? 'Устройства заняты записью' : 'Глаз — звук, замок — выбор';
-  document.getElementById('btnStartRec').disabled = recordTransition || isRecording || !Object.values(sourceState).some(s => s.enabled && s.visible);
+  document.getElementById('btnStartRec').disabled = recordTransition || isRecording || Object.values(sourceState).some(s => s.pending) || !Object.values(sourceState).some(s => s.enabled && s.visible);
   document.getElementById('btnStopRec').disabled = recordTransition || !isRecording;
   document.getElementById('btnPauseRec').disabled = recordTransition || !isRecording;
-  document.getElementById('audioTrackSelect').disabled = isRecording;
+  const mic = sourceState.mic.enabled && sourceState.mic.visible, sys = sourceState.sys.enabled && sourceState.sys.visible;
+  document.getElementById('audioTrackSelect').disabled = isRecording || recordTransition || Object.values(sourceState).some(s => s.pending);
+  document.getElementById('audioTrackSelect').value = mic && sys ? 'mix' : mic ? 'mic' : sys ? 'system' : 'none';
+  document.getElementById('dualTrackBadge').innerHTML = `<i class="fa-solid fa-${mic && sys ? 'layer-group' : mic ? 'microphone' : sys ? 'volume-high' : 'volume-xmark'}"></i> ${mic && sys ? 'MIC + SYS' : mic ? 'МИКРОФОН' : sys ? 'ТОЛЬКО ЗВУК КОМПЬЮТЕРА' : 'ЗВУК ВЫКЛЮЧЕН'}`;
   document.getElementById('playbackNotice').textContent = isRecording && sourceState.sys.enabled ? 'Прослушиваемый звук также попадёт в запись системного канала.' : '';
 }
 async function toggleSource(source) {
-  const next = !sourceState[source].enabled;
+  if (recordTransition || sourceState[source].pending) return;
   try {
-    await callApi('set_source_muted', {source, muted: !next});
-    sourceState[source].enabled = next;
-    updateSourceControls();
+    await setSourceEnabled(source, !sourceState[source].enabled);
   } catch (error) { updateAiThought(error.message); }
+}
+async function setSourceEnabled(source, enabled, quiet = false) {
+  const state = sourceState[source];
+  if (state.pending) throw new Error('Дождитесь переключения источника звука.');
+  state.pending = true; sourceRevision++; updateSourceControls();
+  try {
+    const result = await callApi('set_source_muted', {source, muted: !enabled});
+    state.enabled = !result[source];
+    if (!state.enabled) {
+      inputLevels[source] = 0;
+      document.getElementById(source + 'VuBar').style.height = '0%';
+      document.getElementById(source + 'DbVal').textContent = '−∞ dB';
+      latestAudioLevel = Math.max(inputLevels.mic, inputLevels.sys);
+    }
+    if (!quiet) updateAiThought(`${source === 'mic' ? 'Микрофон' : 'Системный звук'} ${state.enabled ? 'включён' : 'выключен'}${state.enabled ? '.' : ': новый звук этого источника не попадает в запись и live-стенограмму.'}`);
+  } finally { state.pending = false; sourceRevision++; updateSourceControls(); }
 }
 function lockSource(source) { sourceState[source].locked = !sourceState[source].locked; updateSourceControls(); }
 function openSourcePicker() { document.getElementById('sourcePicker').hidden = !document.getElementById('sourcePicker').hidden; }
@@ -184,16 +224,29 @@ async function refreshSources() {
   await initAudioDevices();
   updateSourceControls();
 }
-function onTrackModeChange() {
+async function onTrackModeChange() {
+  if (isRecording || recordTransition) return;
   const mode = document.getElementById('audioTrackSelect').value;
-  sourceState.mic.enabled = mode !== 'system';
-  sourceState.sys.enabled = mode !== 'mic';
-  for (const source of ['mic', 'sys']) sourceState[source].visible = true;
-  updateSourceControls();
+  recordTransition = true; updateSourceControls();
+  try {
+    await setSourceEnabled('mic', mode === 'mic' || mode === 'mix', true);
+    await setSourceEnabled('sys', mode === 'system' || mode === 'mix', true);
+    for (const source of ['mic', 'sys']) sourceState[source].visible = true;
+  } catch (error) { updateAiThought(error.message); }
+  finally { recordTransition = false; updateSourceControls(); }
+}
+async function prepareScreenAudio() {
+  if (recordTransition || Object.values(sourceState).some(s => s.pending)) throw new Error('Дождитесь переключения источников и повторите выбор экрана.');
+  recordTransition = true; updateSourceControls();
+  try {
+    await setSourceEnabled('mic', false, true);
+    if (!sourceState.sys.enabled) await setSourceEnabled('sys', true, true);
+    sourceState.sys.visible = true;
+  } finally { recordTransition = false; updateSourceControls(); }
 }
 
 async function toggleRecording() {
-  if (isRecording || recordTransition) return;
+  if (isRecording || recordTransition || Object.values(sourceState).some(s => s.pending)) return;
   recordTransition = true;
   updateSourceControls();
   try {
@@ -204,6 +257,7 @@ async function toggleRecording() {
     await callApi('start_recording', {mode: mic && sys ? 'mix' : mic ? 'mic' : 'system', mic_index: deviceIndex('micDeviceSelect'),
       loopback_index: deviceIndex('loopbackDeviceSelect'), mic_muted: !mic, sys_muted: !sys});
     isRecording = true;
+    activeSources = [...(mic ? ['mic'] : []), ...(sys ? ['sys'] : [])];
     invalidateProtocol('live');
     isPaused = false;
     lastLive = {state: 'listening', segments: []};
@@ -301,15 +355,19 @@ function renderJobs() {
 async function pollWorkspace() {
   if (pollRunning) return;
   pollRunning = true;
+  const requestedSourceRevision = sourceRevision;
   try {
     const [status, live, jobs] = await Promise.all([callApi('get_recording_status'), callApi('get_live_status'), callApi('get_jobs')]);
     isRecording = status.is_recording; isPaused = status.is_paused;
+    if (sourceRevision === requestedSourceRevision && !recordTransition && !Object.values(sourceState).some(s => s.pending)) applySourceStatus(status);
     document.getElementById('recBadge').style.display = isRecording ? 'inline-block' : 'none';
     document.getElementById('btnPauseRec').textContent = isPaused ? 'Продолжить запись' : 'Пауза';
     if (status.error) updateAiThought(status.error);
-    latestAudioLevel = Math.max(status.mic_level || 0, status.system_level || 0);
+    inputLevels.mic = sourceState.mic.enabled ? status.mic_level || 0 : 0;
+    inputLevels.sys = sourceState.sys.enabled ? status.system_level || 0 : 0;
+    latestAudioLevel = Math.max(inputLevels.mic, inputLevels.sys);
     document.getElementById('recTimer').textContent = clockText(status.elapsed_seconds);
-    for (const [kind, level] of [['mic', status.mic_level], ['sys', status.system_level]]) {
+    for (const [kind, level] of Object.entries(inputLevels)) {
       document.getElementById(kind + 'VuBar').style.height = `${Math.min(100, (level || 0) * 100)}%`;
       document.getElementById(kind + 'DbVal').textContent = level > 0 ? `${Math.round(20 * Math.log10(level))} dB` : '−∞ dB';
     }
@@ -354,7 +412,8 @@ function setupPlayer(player) {
     if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
     if (!audioNodes.has(player)) {
       const source = audioContext.createMediaElementSource(player);
-      const analyser = audioContext.createAnalyser(); analyser.fftSize = 128; analyser.smoothingTimeConstant = 0.65;
+      const analyser = audioContext.createAnalyser(); analyser.fftSize = 4096; analyser.smoothingTimeConstant = 0.35;
+      analyser.minDecibels = -85; analyser.maxDecibels = -20;
       source.connect(analyser); analyser.connect(audioContext.destination);
       audioNodes.set(player, {analyser, bins: new Uint8Array(analyser.frequencyBinCount)});
     }
@@ -383,29 +442,24 @@ function configureArchiveAudio(meeting) {
 
 function startWaveformAnimation() {
   const archiveCanvas = document.getElementById('playbackCanvas');
-  function paint(target, values) {
-    const context = target.getContext('2d'); context.clearRect(0, 0, target.width, target.height);
-    const width = target.width / 48;
-    for (let i = 0; i < 48; i++) {
-      const amplitude = values[i] || 0;
-      const height = amplitude > 0.008 ? Math.max(3, amplitude * target.height * 0.85) : 2;
-      context.fillStyle = amplitude > 0.008 ? '#32b3ef' : '#353f48';
-      context.fillRect(i * width, (target.height - height) / 2, Math.max(1, width - 2), height);
-    }
-  }
-  function draw() {
-    let playback = Array(48).fill(0);
+  const mainVisual = new VoiceVisualizer(canvas), archiveVisual = new VoiceVisualizer(archiveCanvas);
+  function draw(now) {
+    let playback = new Float32Array(40);
     if (activePlayback && !activePlayback.paused && !activePlayback.ended) {
       const state = audioNodes.get(activePlayback);
-      if (state) { state.analyser.getByteFrequencyData(state.bins); playback = Array.from(state.bins.slice(0, 48), n => n / 255); }
+      if (state) playback = VoiceVisualizer.readBands(state, audioContext.sampleRate);
     }
-    const playing = activePlayback && !activePlayback.paused;
-    const levels = playing ? playback : Array.from({length: 48}, (_, i) => isRecording && !isPaused ? Math.min(1, latestAudioLevel * 2.8 * Math.exp(-2.2 * ((i - 24) / 24) ** 2)) : 0);
-    paint(canvas, levels); paint(archiveCanvas, playback);
+    const playing = activePlayback && !activePlayback.paused && !activePlayback.ended;
+    const levels = playing ? playback : Array.from({length: 40}, (_, i) => isRecording && !isPaused ? Math.min(1, latestAudioLevel * 2.8 * Math.exp(-2.2 * ((i - 19.5) / 20) ** 2)) : 0);
+    mainVisual.paint(levels, now); archiveVisual.paint(playback, now);
     document.getElementById('waveSourceLabel').textContent = playing ? 'Эквалайзер: прослушиваемый фрагмент' : 'Индикаторы входящего звука';
+    const status = playing ? 'Воспроизведение записи' : isPaused ? 'Запись на паузе' : isRecording ? (latestAudioLevel > .008 ? 'Слышу голос' : 'Слушаю · ожидание речи') : 'Готов слушать';
+    const label = document.getElementById('voiceState');
+    if (label.textContent !== status) { label.textContent = status; canvas.setAttribute('aria-label', 'Эквалайзер: ' + status); }
+    document.getElementById('voiceDetail').textContent = playing ? '40 частотных полос' : 'Уровень входящего звука';
     waveformAnimationId = requestAnimationFrame(draw);
   }
-  draw();
+  draw(performance.now());
 }
 
 async function saveExport(format) {

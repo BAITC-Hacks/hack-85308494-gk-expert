@@ -80,10 +80,13 @@ class AudioRecorder:
     def set_muted(self, source, muted):
         if source not in self._muted:
             raise ValueError("Неизвестный источник звука")
-        self._muted[source] = bool(muted)
-        if muted:
-            setattr(self, "mic_level" if source == "mic" else "system_level", 0.0)
-        return dict(self._muted)
+        # Serialize with the callback's mute check and frame append. Once this
+        # returns, no callback can append a block using the previous mute state.
+        with self._frames_lock:
+            self._muted[source] = bool(muted)
+            if muted:
+                setattr(self, "mic_level" if source == "mic" else "system_level", 0.0)
+            return dict(self._muted)
 
     def available_seconds(self):
         with self._frames_lock:
@@ -265,9 +268,14 @@ class AudioRecorder:
             if time.monotonic() - updated > 0.25:
                 setattr(self, level, 0.0)
 
+        with self._frames_lock:
+            muted = dict(self._muted)
+            active_sources = [track['kind'] for track in self._live_tracks] if self.is_recording else []
         return {
             "is_recording": self.is_recording,
             "is_paused": self.is_paused,
+            "muted": muted,
+            "active_sources": active_sources,
             "elapsed_seconds": round(self.elapsed_time, 1),
             "filename": os.path.basename(self.master_filename) if self.master_filename else "",
             "has_mic_track": os.path.exists(self.mic_filename),
@@ -326,14 +334,14 @@ class AudioRecorder:
                     if self._stop_event.is_set():
                         return (None, pyaudio.paComplete)
                     if not self.is_paused and data:
-                        if self._muted[track["kind"]]:
-                            data = bytes(len(data))
                         with self._frames_lock:
+                            if self._muted[track["kind"]]:
+                                data = bytes(len(data))
                             track["offsets"].append(track["frame_count"])
                             track["frames"].append(data)
                             track["frame_count"] += len(data) // (2 * track["channels"])
-                        setattr(self, track["level"], self._calc_rms(data))
-                        self._level_updated[track["level"]] = time.monotonic()
+                            setattr(self, track["level"], self._calc_rms(data))
+                            self._level_updated[track["level"]] = time.monotonic()
                     else:
                         setattr(self, track["level"], 0.0)
                     return (None, pyaudio.paContinue)

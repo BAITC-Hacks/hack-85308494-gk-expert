@@ -3,17 +3,20 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>QazaqProtocol AI — OBS Studio Style</title>
+  <title>QazaqProtocol Pro — Студия совещаний</title>
   <link rel="stylesheet" href="style.css">
   <link rel="stylesheet" href="vendor/fontawesome/css/all.min.css">
+  <link rel="stylesheet" href="theme.css">
 </head>
 <body>
 
 <div class="obs-menu-bar">
+  <div class="app-brand"><span class="brand-glyph" aria-hidden="true">∿</span><div><span class="brand-name">QazaqProtocol Pro</span><span class="brand-caption">СТУДИЯ СОВЕЩАНИЙ</span></div></div>
   <button onclick="showWorkspaceTab('work')">Рабочая сессия</button>
   <button onclick="showWorkspaceTab('history')">История</button>
   <button onclick="triggerFileInput()">Загрузить аудио</button>
   <button onclick="openSettingsModal()">Настройки</button>
+  <span class="local-badge"><i class="fa-solid fa-shield-halved" aria-hidden="true"></i> Локальная обработка</span>
 </div>
 <div class="obs-main-workspace">
   <div class="obs-col obs-col-left">
@@ -28,12 +31,12 @@
     <div class="obs-panel sources-panel">
       <div class="obs-panel-header">Источники <span id="sourceStateLabel">Выберите источник</span></div>
       <div class="obs-panel-content" id="sourceRows">
-        <div class="source-item selected" data-source="mic" onclick="selectSource('mic')">
-          <button class="source-toggle" id="micEnabled" title="Включить / выключить микрофон" onclick="event.stopPropagation(); toggleSource('mic')" aria-pressed="true"><i class="fa-solid fa-eye"></i></button>
+        <div class="source-item" data-source="mic" onclick="selectSource('mic')">
+          <button class="source-toggle" id="micEnabled" title="Включить микрофон" onclick="event.stopPropagation(); toggleSource('mic')" aria-pressed="false"><i class="fa-solid fa-eye-slash"></i></button>
           <button id="micLocked" title="Зафиксировать выбор устройства" onclick="event.stopPropagation(); lockSource('mic')" aria-pressed="false"><i class="fa-solid fa-lock-open"></i></button>
           <select id="micDeviceSelect" aria-label="Микрофон"></select>
         </div>
-        <div class="source-item" data-source="sys" onclick="selectSource('sys')">
+        <div class="source-item selected" data-source="sys" onclick="selectSource('sys')">
           <button class="source-toggle" id="sysEnabled" title="Включить / выключить системный звук" onclick="event.stopPropagation(); toggleSource('sys')" aria-pressed="true"><i class="fa-solid fa-eye"></i></button>
           <button id="sysLocked" title="Зафиксировать выбор устройства" onclick="event.stopPropagation(); lockSource('sys')" aria-pressed="false"><i class="fa-solid fa-lock-open"></i></button>
           <select id="loopbackDeviceSelect" aria-label="Системный звук"></select>
@@ -59,16 +62,17 @@
     <!-- Preview Monitor -->
     <div class="obs-preview-monitor">
       <video id="screenVideoPreview" autoplay playsinline muted style="display:none;"></video>
-      <canvas id="waveformCanvas" width="800" height="190"></canvas>
+      <canvas id="waveformCanvas" width="800" height="190" role="img" aria-label="Эквалайзер: ожидание звука"></canvas>
       <div class="monitor-overlay">
         <div style="display:flex;gap:10px;">
           <span class="rec-badge" id="recBadge"><i class="fa-solid fa-circle"></i> REC</span>
-          <span class="timer-display" id="dualTrackBadge"><i class="fa-solid fa-layer-group"></i> 2 ТРЕКА (MIC + SYS)</span>
+          <span class="timer-display" id="dualTrackBadge"><i class="fa-solid fa-volume-high"></i> ТОЛЬКО ЗВУК КОМПЬЮТЕРА</span>
         </div>
         <div>
           <span class="timer-display" id="recTimer">00:00:00</span>
         </div>
       </div>
+      <div class="voice-footer"><span><i class="voice-dot"></i><span id="voiceState">Готов слушать</span></span><span id="voiceDetail">Звук записи и воспроизведения</span></div>
     </div>
 
     <div class="obs-panel live-panel">
@@ -96,22 +100,22 @@
           
           <!-- Channel 1 Desktop -->
           <div class="mixer-channel">
-            <div class="mixer-label"><span class="badge badge-normal" style="background:#2a6aff;color:#fff;">Global</span><br>Desktop Audio ▼</div>
+            <div class="mixer-label"><span class="channel-badge">SYS</span><br>Системный звук</div>
             <div class="mixer-meter-container">
               <div class="vu-bar" id="sysVuBar"></div>
             </div>
             <div class="mixer-db" id="sysDbVal">-inf dB</div>
-            <button class="mixer-mute" onclick="toggleSource('sys')" title="Системный звук: вкл/выкл"><i class="fa-solid fa-volume-high"></i></button>
+            <button id="sysMuteButton" class="mixer-mute" onclick="toggleSource('sys')" title="Выключить системный звук" aria-pressed="false"><i class="fa-solid fa-volume-high"></i><span>Включён</span></button>
           </div>
           
           <!-- Channel 2 Mic -->
           <div class="mixer-channel">
-            <div class="mixer-label"><span class="badge badge-normal" style="background:#2a6aff;color:#fff;">Global</span><br>Mic/Aux ▼</div>
+            <div class="mixer-label"><span class="channel-badge">MIC</span><br>Микрофон</div>
             <div class="mixer-meter-container">
               <div class="vu-bar" id="micVuBar"></div>
             </div>
             <div class="mixer-db" id="micDbVal">-inf dB</div>
-            <button class="mixer-mute" onclick="toggleSource('mic')" title="Микрофон: вкл/выкл"><i class="fa-solid fa-microphone"></i></button>
+            <button id="micMuteButton" class="mixer-mute is-muted" onclick="toggleSource('mic')" title="Включить микрофон" aria-pressed="true"><i class="fa-solid fa-microphone-slash"></i><span>Выключен</span></button>
           </div>
 
         </div>
@@ -139,9 +143,10 @@
           
           <label style="font-size:11px;color:var(--obs-text-dim)">Режим дорожек:</label>
           <select id="audioTrackSelect" onchange="onTrackModeChange()">
-            <option value="mix" selected>🎚️ Раздельно (Mic+Sys)</option>
-            <option value="system">🔊 Только Sys Loopback</option>
+            <option value="mix">🎚️ Раздельно (Mic+Sys)</option>
+            <option value="system" selected>🔊 Только Sys Loopback</option>
             <option value="mic">🎙️ Только Mic</option>
+            <option value="none" disabled>Звук выключен</option>
           </select>
         </div>
       </div>
@@ -164,8 +169,8 @@
         <button id="btnSelectWindow" onclick="selectScreenShare()"><i class="fa-solid fa-display"></i> Предпросмотр экрана</button>
         
         <div class="obs-separator"></div>
-        <button onclick="exportDocx()"><i class="fa-solid fa-file-word" style="color:#2b579a"></i> Экспорт Word</button>
-        <button onclick="exportPdf()"><i class="fa-solid fa-file-pdf" style="color:#e3242b"></i> Экспорт PDF</button>
+        <button onclick="exportDocx()"><i class="fa-solid fa-file-word"></i> Экспорт Word</button>
+        <button onclick="exportPdf()"><i class="fa-solid fa-file-pdf"></i> Экспорт PDF</button>
         <button onclick="exportSedJson()"><i class="fa-solid fa-network-wired"></i> Экспорт в СЭД</button>
         
         <div class="obs-separator"></div>
@@ -322,15 +327,15 @@
     <div class="modal-header">Настройки системы <button class="modal-close" onclick="closeSettingsModal()">&times;</button></div>
     <div class="modal-body">
       <label style="font-size:12px;color:var(--obs-text-dim);margin-bottom:4px;display:block;">Организация по умолчанию:</label>
-      <label for="settingsLanguage">Язык распознавания</label><select id="settingsLanguage"><option value="auto">Авто / смешанная речь</option><option value="ru">Русский</option><option value="kk">Қазақша</option></select>
       <input type="text" id="settingsCompany" placeholder="Название организации (например: АО «Самрук-Қазына Өңдеу»)">
+      <label for="settingsLanguage">Язык распознавания</label><select id="settingsLanguage"><option value="auto">Авто / смешанная речь</option><option value="ru">Русский</option><option value="kk">Қазақша</option></select>
       <label style="font-size:12px;color:var(--obs-text-dim);margin:8px 0 4px;display:block;">Отраслевой глоссарий терминов:</label>
       <textarea id="settingsPrompt" rows="3" placeholder="Ключевые термины (ПХЗ, KPI, ТБ, смета, ПНР, шала-қазақша)..."></textarea>
       <label for="settingsParticipants">Имена участников (необязательно, по одному на строку)</label>
       <textarea id="settingsParticipants" rows="3" placeholder="Гульмира Сериковна&#10;Тимур Булатович"></textarea>
       <label for="settingsSpeakerCount">Количество разных голосов (0 — определить автоматически)</label>
       <input id="settingsSpeakerCount" type="number" min="0" max="32" value="0">
-      <div style="margin-top:10px;padding:8px;background:rgba(0,214,79,0.1);border:1px solid #00d64f;border-radius:4px;font-size:11px;color:#00d64f;">
+      <div class="privacy-note">
         <i class="fa-solid fa-shield-halved"></i> Контур безопасности: Автономная локальная обработка (Faster-Whisper + On-Premise NLP). Передача во внешние API отключена.
       </div>
     </div>
@@ -355,6 +360,7 @@
 </div>
 
 <script src="main.js"></script>
+<script src="voice-visualizer.js"></script>
 <script src="workspace.js"></script>
 </body>
 </html>

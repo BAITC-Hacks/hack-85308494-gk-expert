@@ -94,6 +94,7 @@ class ProtocolApiBridge:
         self._processing = {"busy": False, "stage": "Готов", "started_at": 0}
 
         self.recorder = AudioRecorder(output_dir=os.path.join(DATA_DIR, "storage", "recordings"))
+        self.recorder.set_muted('mic', True)
         self.stt = SpeechToTextEngine()
         self.live_stt = SpeechToTextEngine(live=True)
         self.media = MediaStore(os.path.join(DATA_DIR, "storage", "playback"))
@@ -117,26 +118,30 @@ class ProtocolApiBridge:
 
     def start_recording(self, params=None):
         params = params or {}
-        mode = params.get("mode", "mix")
+        mode = params.get("mode", "system")
         mic_idx = params.get("mic_index")
         loop_idx = params.get("loopback_index")
         with self._record_control:
             if self.recorder.is_recording:
                 raise RuntimeError("Запись уже идёт")
+            # Apply before streams start, including their very first callback.
+            self.recorder.set_muted('mic', mode not in ('mic', 'mix') or params.get('mic_muted', False))
+            self.recorder.set_muted('sys', mode not in ('system', 'mix') or params.get('sys_muted', False))
             result = self.recorder.start_recording(mode=mode, mic_index=mic_idx, loopback_index=loop_idx)
-            self.recorder.set_muted('mic', params.get('mic_muted', False))
-            self.recorder.set_muted('sys', params.get('sys_muted', False))
             self.live = LiveTranscriber(self.recorder, self.live_stt, self.media, self.settings, speakers=self.live_speakers)
             self.live.start()
             return result
 
     def set_source_muted(self, params):
-        if self.recorder.is_recording and not params.get('muted'):
-            with self.recorder._frames_lock:
-                active = [track['kind'] for track in self.recorder._live_tracks]
-            if params.get('source') not in active:
-                raise ValueError('Этот источник не был включён при старте. Остановите запись и включите его перед новой записью.')
-        return self.recorder.set_muted(params.get('source'), params.get('muted'))
+        if not isinstance(params.get('muted'), bool):
+            raise ValueError('Укажите состояние звука: включён или выключен.')
+        with self._record_control:
+            if self.recorder.is_recording and not params['muted']:
+                with self.recorder._frames_lock:
+                    active = [track['kind'] for track in self.recorder._live_tracks]
+                if params.get('source') not in active:
+                    raise ValueError('Этот источник не был включён при старте. Остановите запись и включите его перед новой записью.')
+            return self.recorder.set_muted(params.get('source'), params['muted'])
 
     def get_live_status(self, params=None):
         return self.live.status() if self.live else {'state': 'idle', 'segments': [], 'current_chunk': None}

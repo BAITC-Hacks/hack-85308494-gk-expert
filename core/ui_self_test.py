@@ -17,6 +17,31 @@ def wait_js(window, expression, timeout=10):
     raise AssertionError(expression)
 
 
+def capture_ui(window, name):
+    """Optional review screenshots of this diagnostic window only."""
+    destination = os.getenv('QAZAQ_UI_SCREENSHOT_DIR')
+    if not destination:
+        return
+    import ctypes
+    from ctypes import wintypes
+    from PIL import ImageGrab
+    user32 = ctypes.windll.user32
+    user32.SetThreadDpiAwarenessContext.restype = ctypes.c_void_p
+    previous = user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(-4))
+    try:
+        handle = wintypes.HWND(window.native.Handle.ToInt64())
+        user32.SetForegroundWindow(handle)
+        time.sleep(.3)
+        rectangle = wintypes.RECT()
+        if not user32.GetWindowRect(handle, ctypes.byref(rectangle)):
+            raise RuntimeError('Cannot capture diagnostic window bounds')
+        folder = Path(destination)
+        folder.mkdir(parents=True, exist_ok=True)
+        ImageGrab.grab(bbox=(rectangle.left, rectangle.top, rectangle.right, rectangle.bottom), all_screens=True).save(folder / (name + '.png'))
+    finally:
+        user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(previous))
+
+
 def cancel_native_dialog(window, bridge, report):
     """Close only this test process's native dialog, without keyboard input."""
     import ctypes
@@ -66,6 +91,11 @@ def run_gui_check(window, bridge):
             time.sleep(0.25)
         else:
             raise RuntimeError("UI or audio device initialization did not finish")
+        window.resize(1280, 780)
+        time.sleep(1)
+        wait_js(window, "document.fonts.status === 'loaded'")
+        assert window.evaluate_js("document.fonts.check('12px Manrope')")
+        capture_ui(window, '01-workspace')
         first = window.evaluate_js("document.getElementById('waveformCanvas').toDataURL()")
         time.sleep(0.5)
         second = window.evaluate_js("document.getElementById('waveformCanvas').toDataURL()")
@@ -88,6 +118,7 @@ def run_gui_check(window, bridge):
         meeting["id"] = "ui_test_only"
         bridge.manager.save_meeting(meeting)
         window.evaluate_js("renderMeeting(" + json.dumps(meeting, ensure_ascii=False) + ")")
+        capture_ui(window, '02-protocol')
         assert window.evaluate_js("document.getElementById('tabContentTranscript').classList.contains('active')")
         rendered = window.evaluate_js("document.getElementById('dialogueChat').innerText")
         assert "Әлия" in rendered and "Бюджет < 5 & план > 2." in rendered
@@ -109,10 +140,15 @@ def run_gui_check(window, bridge):
         wait_js(window, "(() => {let s = audioNodes.get(activePlayback); s.analyser.getByteFrequencyData(s.bins); return s.bins.some(v => v > 0)})()")
         moving = window.evaluate_js("document.getElementById('waveformCanvas').toDataURL()")
         assert moving != first
+        wait_js(window, "document.getElementById('playbackCanvas').dataset.signal === 'audio'")
+        assert window.evaluate_js("VoiceVisualizer.readBands(audioNodes.get(activePlayback), audioContext.sampleRate).length === 40")
+        capture_ui(window, '03-equalizer')
         window.evaluate_js("document.getElementById('monitorAudio').pause()")
         time.sleep(.15)
         assert window.evaluate_js("document.getElementById('waveformCanvas').toDataURL()") == first
         report['playback_equalizer'] = True
+        report['glass_theme_local_font'] = True
+        report['equalizer_40_audio_bands'] = True
         cancel_native_dialog(window, bridge, report)
         # Selecting a new file must retire the old meeting even during delayed HTTP responses.
         from core.speaker_context import resolve_names
@@ -160,10 +196,22 @@ def run_gui_check(window, bridge):
             assert 'Только короткий фрагмент.' in exported and 'новый отчёт' not in exported
             report['live_fragment_exact_audio_and_text'] = True
             report['fragment_export'] = True
+            capture_ui(window, '04-fragment')
         finally:
             with bridge.jobs._lock:
                 bridge.jobs._jobs.pop('ui_job_new', None)
                 bridge.jobs._jobs.pop('ui_job_pending', None)
+        window.evaluate_js("selectedJobId = null; lastJob = null; invalidateProtocol('none', null); showWorkspaceTab('work'); showStreamView('live')")
+        window.resize(1024, 700)
+        time.sleep(.6)
+        assert window.evaluate_js("(() => {const s = document.querySelector('.sources-panel').getBoundingClientRect(); const c = document.querySelector('.obs-panels-bottom-row').getBoundingClientRect(); return s.bottom <= innerHeight && c.bottom <= innerHeight && document.body.scrollWidth <= innerWidth;})()"), 'Workspace does not fit the minimum window'
+        assert window.evaluate_js("(() => { const view = document.querySelector('.stream-view:not([hidden])'); const controls = view.querySelector('.chunk-controls').getBoundingClientRect(); const text = view.querySelector('.stream-text').getBoundingClientRect(); const player = document.querySelector('.playback-strip').getBoundingClientRect(); return controls.bottom <= player.top + 1 && text.bottom <= controls.top + 1 && controls.height >= 24; })()"), 'Fragment controls overlap the player'
+        capture_ui(window, '05-compact')
+        window.evaluate_js("openSettingsModal()")
+        wait_js(window, "document.getElementById('settingsPrompt').getBoundingClientRect().height >= 70 && document.getElementById('settingsParticipants').getBoundingClientRect().height >= 70")
+        capture_ui(window, '06-settings')
+        window.evaluate_js("closeSettingsModal()")
+        report['compact_workspace'] = True
         report.update(ok=True, engine="offline", idle_waveform_static=True, unicode_transcript=True,
                       task_table=True, parallel_controls=True, actual_webview2=True)
     except Exception:
